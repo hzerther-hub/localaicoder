@@ -1,0 +1,24 @@
+{
+  "default": "deepseek/deepseek-chat",
+  "providers": [
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "",
+      "models": [
+        { "id": "deepseek-chat", "name": "DeepSeek Chat" },
+        { "id": "deepseek-reasoner", "name": "DeepSeek Reasoner", "reasoning": true }
+      ]
+    },
+    {
+      "id": "qwen38-local",
+      "name": "本地 Qwen",
+      "base_url": "http://127.0.0.1:8097/v1",
+      "api_key": "local-noauth",
+      "models": [
+        { "id": "qwen3.8-27b-q8", "name": "Qwen3.8-27B (本地)" }
+      ]
+    }
+  ]
+}

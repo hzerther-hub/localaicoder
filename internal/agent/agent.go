@@ -1,0 +1,515 @@
+// Package agent Agent 循环：流式 function-calling + 权限控制
+//（对译 Python agent.py；事件契约 1:1）。
+package agent
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
+	"localai/internal/attach"
+	"localai/internal/cache"
+	"localai/internal/config"
+	"localai/internal/ctxcompact"
+	"localai/internal/llm"
+	"localai/internal/mcp"
+	"localai/internal/media"
+	"localai/internal/msg"
+	"localai/internal/tools"
+)
+
+// 权限模式
+const (
+	ModeReadonly = "readonly" // 只读：不提供可写工具
+	ModeAsk      = "ask"      // 询问：可写工具执行前需批准
+	ModeAlways   = "always"   // 总是允许：直接执行
+)
+
+// Usage 一次对话累计 token 用量。
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	CachedTokens     int `json:"cached_tokens"`
+	ReasoningTokens  int `json:"reasoning_tokens"`
+	Requests         int `json:"requests"`
+	// 费用估算（USD）；按当前模型 pricing 换算
+	CostUSDFloat float64 `json:"cost_usd"`
+}
+
+// Agent 执行一次完整的对话：提问 → 工具调用 → 最终回答。
+type Agent struct {
+	OnEvent    func(msg.Event)                                             // 事件回调（12 种，见 agent.py 契约）
+	OnApproval func(name string, args map[string]any, summary string) bool // ask 模式审批
+	OnStop     func() bool                                                 // 返回 true 则中止循环
+	Mode       string
+	Model      *config.ModelConfig
+
+	Messages   []msg.Msg // run 后是（可能被压缩过的）完整消息列表
+	UsageTotal Usage
+	CacheHits  int
+	CacheSaved int
+
+	fallbackUsed bool
+}
+
+// New 创建 Agent；mode 空值默认 always。
+func New(onEvent func(msg.Event), onApproval func(string, map[string]any, string) bool,
+	onStop func() bool, mode string, model *config.ModelConfig) *Agent {
+	if mode == "" {
+		mode = ModeAlways
+	}
+	return &Agent{
+		OnEvent:    onEvent,
+		OnApproval: onApproval,
+		OnStop:     onStop,
+		Mode:       mode,
+		Model:      model,
+	}
+}
+
+func (a *Agent) emit(e msg.Event) {
+	if a.OnEvent != nil {
+		a.OnEvent(e)
+	}
+}
+
+// buildUserMessage 构造用户消息；有附件时转多模态 content 列表。
+// attachments 元素：文件路径字符串，或 {"kind":"snippet",...} 片段字典。
+func (a *Agent) buildUserMessage(userMessage string, attachments []any) msg.Msg {
+	if len(attachments) == 0 {
+		return msg.Msg{"role": "user", "content": userMessage}
+	}
+	if strings.TrimSpace(userMessage) == "" {
+		userMessage = "请分析我附加的文件。"
+	}
+	parts := []any{map[string]any{"type": "text", "text": userMessage}}
+	var mediaLines []string
+	for _, av := range attachments {
+		// 代码片段附件（编辑器选中区右键加入）：直接内联文件+行号+内容
+		if att, ok := av.(map[string]any); ok && msg.S(att, "kind") == "snippet" {
+			parts = append(parts, map[string]any{"type": "text", "text": attach.FormatSnippet(att)})
+			continue
+		}
+		path, _ := av.(string)
+		kind := media.Classify(path)
+		if kind == "image" {
+			url, err := media.ImageToDataURL(path)
+			if err == nil {
+				parts = append(parts, map[string]any{
+					"type": "image_url", "image_url": map[string]any{"url": url}})
+				continue
+			}
+			mediaLines = append(mediaLines, fmt.Sprintf("[图片读取失败: %s（%v）]", path, err))
+			continue
+		}
+		if kind == "audio" || kind == "video" {
+			label := map[string]string{"audio": "音频", "video": "视频"}[kind]
+			mediaLines = append(mediaLines, fmt.Sprintf("[附件%s: %s]", label, path))
+			continue
+		}
+		// 文档/压缩包：就地分析（文本内联 / 解压清单），模型直接可操作
+		if analysis := attach.Analyze(path); analysis != "" {
+			parts = append(parts, map[string]any{"type": "text", "text": analysis})
+			continue
+		}
+		mediaLines = append(mediaLines, fmt.Sprintf("[附件文件: %s]", path))
+	}
+	if len(mediaLines) > 0 {
+		parts = append(parts, map[string]any{
+			"type": "text",
+			"text": strings.Join(mediaLines, "\n") +
+				"\n（音视频附件可用 run_shell 调 ffmpeg/ffprobe 分析处理）",
+		})
+	}
+	return msg.Msg{"role": "user", "content": parts}
+}
+
+// executeWithCache 执行工具；只读工具的结果走缓存。
+func (a *Agent) executeWithCache(name string, args map[string]any) string {
+	if strings.HasPrefix(name, "mcp_") {
+		// MCP 工具：经管理器路由；返回的图片发 media 事件给 UI 内嵌显示。
+		// 外部服务器可能返回时效性数据，不走缓存。
+		text, mediaPaths := mcp.GetManager().Call(name, args)
+		if len(mediaPaths) > 0 {
+			a.emit(msg.Event{"type": "media", "paths": toAny(mediaPaths)})
+		}
+		return text
+	}
+	if !tools.IsWriteTool(name) {
+		ws := tools.GetWorkspace()
+		if hit, ok := cache.GetTool(name, args, ws); ok {
+			a.CacheHits++
+			return hit
+		}
+		result := tools.ExecuteTool(name, args)
+		cache.PutTool(name, args, ws, result)
+		return result
+	}
+	return tools.ExecuteTool(name, args) // 可写工具不缓存
+}
+
+func toAny(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
+}
+
+func (a *Agent) emitCacheHit(textLen int) {
+	saved := textLen/2 + len(a.Model.ModelID) // 粗略估算
+	if saved < 1 {
+		saved = 1
+	}
+	a.CacheSaved += saved
+	a.emit(msg.Event{"type": "cache_hit", "saved": saved, "hits": a.CacheHits})
+}
+
+func (a *Agent) accumulateUsage(u map[string]any) {
+	a.UsageTotal.Requests++
+	add := func(dst *int, key string) {
+		if v := msg.I(u, key); v != 0 {
+			*dst += v
+		}
+	}
+	add(&a.UsageTotal.PromptTokens, "prompt_tokens")
+	add(&a.UsageTotal.CompletionTokens, "completion_tokens")
+	add(&a.UsageTotal.TotalTokens, "total_tokens")
+	add(&a.UsageTotal.CachedTokens, "cached_tokens")
+	add(&a.UsageTotal.ReasoningTokens, "reasoning_tokens")
+	// 费用：cached 输入走 hit 价，其余输入走 miss 价，输出走 out 价（USD/1M）
+	if a.Model != nil && (a.Model.PriceInHitPerM > 0 || a.Model.PriceInMissPerM > 0 || a.Model.PriceOutPerM > 0) {
+		cached := float64(msg.I(u, "cached_tokens"))
+		in := float64(msg.I(u, "prompt_tokens"))
+		out := float64(msg.I(u, "completion_tokens"))
+		missIn := in - cached
+		if missIn < 0 {
+			missIn = 0
+		}
+		cost := cached*a.Model.PriceInHitPerM/1e6 +
+			missIn*a.Model.PriceInMissPerM/1e6 +
+			out*a.Model.PriceOutPerM/1e6
+		a.UsageTotal.CostUSDFloat += cost
+	}
+}
+
+func (a *Agent) usageEvent() msg.Event {
+	return msg.Event{
+		"type":  "usage",
+		"usage": nil,
+		"total": a.UsageTotal,
+	}
+}
+
+func (a *Agent) isMCPWrite(name string) bool {
+	return strings.HasPrefix(name, "mcp_") && mcp.GetManager().IsWriteTool(name)
+}
+
+func (a *Agent) toolSchemas() []map[string]any {
+	var base []map[string]any
+	if a.Mode == ModeReadonly {
+		base = tools.ReadOnlySchemas()
+	} else {
+		base = tools.ToolSchemas()
+	}
+	base = append(base, tools.CallModelSchema()...) // 模型派发开启时提供 call_model
+	base = append(base, tools.KBSchema()...)        // 知识库启用时提供 kb_search
+	mgr := mcp.GetManager()                         // 合并 MCP 外部服务器工具
+	if mgr.Connected() && mgr.ToolMapLen() > 0 {
+		extra := mgr.ToolSchemas()
+		if a.Mode == ModeReadonly {
+			var ro []map[string]any
+			for _, s := range extra {
+				if fn, ok := s["function"].(map[string]any); ok {
+					if !mgr.IsWriteTool(msg.S(fn, "name")) {
+						ro = append(ro, s)
+					}
+				}
+			}
+			extra = ro
+		}
+		base = append(base, extra...)
+	}
+	sortToolSchemas(base) // 前缀稳定：工具按名字排序，保证多轮请求前缀逐字节一致
+	return base
+}
+
+// sortToolSchemas 按工具名稳定排序（Reasonix 式 prefix-cache 稳定性）：
+// 服务端 prompt cache 按前缀匹配，工具顺序抖动会让每轮请求的前缀失效、
+// cached_tokens 归零；排序后多轮对话前缀只增不变，命中率最大化。
+func sortToolSchemas(schemas []map[string]any) {
+	sort.Slice(schemas, func(i, j int) bool {
+		fi, _ := schemas[i]["function"].(map[string]any)
+		fj, _ := schemas[j]["function"].(map[string]any)
+		return msg.S(fi, "name") < msg.S(fj, "name")
+	})
+}
+
+// localUnavailable 错误是否为本地模型不可用（HTTP 503 / Loading model / 没在运行）。
+func localUnavailable(errText string) bool {
+	return strings.Contains(errText, "HTTP 503") ||
+		strings.Contains(strings.ToLower(errText), "loading model") ||
+		strings.HasPrefix(errText, "连接失败")
+}
+
+// cloudFallback 本地模型不可用时挑一个可用的云端回退模型；不适用返回 nil。
+// 仅对 gpulocal 本地模型生效；候选 flash → pro；受 auto_cloud_fallback 开关控制。
+func (a *Agent) cloudFallback(errText string) *config.ModelConfig {
+	if a.Model == nil || !strings.HasPrefix(a.Model.Key, "gpulocal") {
+		return nil
+	}
+	if !localUnavailable(errText) || !config.GetAutoCloudFallback() {
+		return nil
+	}
+	cfg := config.GetDispatchConfig()
+	for _, key := range []string{msg.S(cfg, "dispatch_flash"), msg.S(cfg, "dispatch_pro")} {
+		if key == "" || strings.HasPrefix(key, "gpulocal") {
+			continue
+		}
+		if mc := config.FindModel(key); mc != nil && mc.APIKey != "" {
+			return mc
+		}
+	}
+	return nil
+}
+
+// Run 同步运行整个 Agent 循环，返回最终文本。
+// history 非空则在其后追加本轮提问（多会话延续对话）；
+// attachments 为本轮附件（路径字符串或 snippet 字典）。
+func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (string, error) {
+	userMsg := a.buildUserMessage(userMessage, attachments)
+	a.fallbackUsed = false
+	var messages []msg.Msg
+	if history != nil {
+		messages = history
+		messages = append(messages, userMsg)
+	} else {
+		messages = []msg.Msg{
+			{"role": "system", "content": config.GetSystemPrompt()},
+			userMsg,
+		}
+	}
+	// 自动注入公司知识库片段：开启后每次提问检索 top-k 片段进上下文
+	if config.GetKBInject() && config.GetKBEnabled() && len(config.GetKBRoots()) > 0 {
+		defer func() { _ = recover() }() // 知识库异常不阻断对话
+		if block := kbRetrieve(userMessage, config.GetKBTopK()); block != "" {
+			insertAt := len(messages) - 1
+			if insertAt < 0 {
+				insertAt = 0
+			}
+			messages = append(messages[:insertAt],
+				append([]msg.Msg{{"role": "system", "content": block}}, messages[insertAt:]...)...)
+		}
+	}
+	a.Messages = messages
+	var finalText []string
+
+	for roundNo := 1; roundNo <= config.MaxToolRounds; roundNo++ {
+		// 用户请求停止：带上已有内容立即退出
+		if a.OnStop != nil && a.OnStop() {
+			a.emit(msg.Event{"type": "text", "delta": "\n（已按用户请求停止）"})
+			finalText = append(finalText, "\n（已按用户请求停止）")
+			break
+		}
+		var textCollected []string
+		var toolCalls []any
+		schemas := a.toolSchemas()
+
+		// 上下文预算：过大时渐进压缩（截断旧工具结果 → 折叠中间轮）
+		messages = ctxcompact.MaybeCompact(messages, a.emit, a.Model)
+
+		// ---- 缓存命中：直接重放事件，不调后端 ----
+		if cached := cache.GetLLM(a.Model.ModelID, messages, schemas); cached != nil {
+			a.CacheHits++
+			for _, ev := range cached {
+				if e, ok := ev.(map[string]any); ok {
+					if msg.S(e, "type") == "text" {
+						textCollected = append(textCollected, msg.S(e, "delta"))
+					}
+					a.emit(e)
+				}
+			}
+			a.emitCacheHit(len(strings.Join(textCollected, "")))
+			finalText = append(finalText, textCollected...)
+			break
+		}
+
+		var roundEvents []any
+		aborted := false // 用户中途停止：半程回复落盘但不进缓存
+		streamErr := llm.StreamChat(*a.Model, messages, schemas, func(e msg.Event) error {
+			// 流中协作式停止：关窗/点停止不必等整轮流完
+			if a.OnStop != nil && a.OnStop() {
+				aborted = true
+				return llm.ErrStop
+			}
+			switch msg.S(e, "type") {
+			case "text":
+				textCollected = append(textCollected, msg.S(e, "delta"))
+				a.emit(e)
+			case "reasoning":
+				a.emit(e)
+			case "tool_calls":
+				toolCalls = msg.L(e, "tool_calls")
+			case "usage":
+				if u, ok := e["usage"].(map[string]any); ok {
+					a.accumulateUsage(u)
+					a.emit(msg.Event{
+						"type": "usage", "usage": u, "total": a.usageTotalAny(),
+					})
+				}
+			}
+			// 记录除 usage 外的事件用于缓存（usage 是后端实时数据）
+			if msg.S(e, "type") != "usage" {
+				roundEvents = append(roundEvents, e)
+			}
+			return nil
+		})
+		if streamErr != nil && !errors.Is(streamErr, llm.ErrStop) {
+			// 本地模型不可用（加载中/未运行）→ 自动切云端重试本轮；
+			// 回退模型再失败就直接报错，不连环回退。
+			errText := streamErr.Error()
+			fb := a.cloudFallback(errText)
+			reason := "未在运行，请先启动本地模型"
+			if strings.Contains(errText, "503") {
+				reason = "正在加载，请稍候"
+			}
+			if fb == nil {
+				if a.Model != nil && strings.HasPrefix(a.Model.Key, "gpulocal") &&
+					localUnavailable(errText) {
+					return "", &llm.LLMError{Msg: fmt.Sprintf(
+						"本地模型 %s %s，且没有可用的云端回退模型。原始错误：%s",
+						a.Model.DisplayName, reason, errText)}
+				}
+				return "", streamErr
+			}
+			if a.fallbackUsed {
+				return "", streamErr
+			}
+			a.fallbackUsed = true
+			old := *a.Model
+			*a.Model = *fb
+			a.emit(msg.Event{"type": "text", "delta": fmt.Sprintf(
+				"\n⚠️ 本地模型 %s %s，已自动切换到云端 %s 继续。\n",
+				old.DisplayName, reason, fb.DisplayName)})
+			// 通知 UI 把模型按钮切到实际使用的模型
+			a.emit(msg.Event{
+				"type": "model_switch", "from": old.DisplayName,
+				"to": map[string]any{
+					"key": fb.Key, "display_name": fb.DisplayName,
+					"base_url": fb.BaseURL, "model_id": fb.ModelID,
+				},
+			})
+			continue
+		}
+		if errors.Is(streamErr, llm.ErrStop) {
+			aborted = true
+		}
+
+		// 服务端"正常结束"却既无正文也无工具调用（如空流）：
+		// 明确提示，避免界面静默空白（用户主动停止除外）
+		if !aborted && len(textCollected) == 0 && len(toolCalls) == 0 {
+			a.emit(msg.Event{"type": "text",
+				"delta": "\n⚠️ 模型未返回任何内容（服务端可能出错或上下文异常）\n"})
+			finalText = append(finalText, "模型未返回任何内容（服务端可能出错或上下文异常）")
+			break
+		}
+
+		// 用户已中止：带已生成文本直接退出（不执行任何工具，不动 messages）
+		if aborted {
+			finalText = append(finalText, textCollected...)
+			break
+		}
+
+		// 本轮没有工具调用 → 完成；纯文本回复写入缓存
+		if len(toolCalls) == 0 {
+			finalText = append(finalText, textCollected...)
+			// 缓存键必须用「请求时」的消息列表（不含本轮回复）
+			if !aborted {
+				cache.PutLLM(a.Model.ModelID, messages, schemas, roundEvents)
+			}
+			content := strings.Join(textCollected, "")
+			if content == "" {
+				content = ""
+			}
+			messages = append(messages, msg.Msg{"role": "assistant", "content": content})
+			break
+		}
+
+		assistantMsg := msg.Msg{
+			"role":       "assistant",
+			"content":    strings.Join(textCollected, ""),
+			"tool_calls": toolCalls,
+		}
+		messages = append(messages, assistantMsg)
+
+		for _, tcv := range toolCalls {
+			tc, ok := tcv.(map[string]any)
+			if !ok {
+				continue
+			}
+			// 每个工具执行前也检查停止
+			if a.OnStop != nil && a.OnStop() {
+				a.emit(msg.Event{"type": "tool_denied", "name": "(用户停止)"})
+				messages = append(messages, msg.Msg{
+					"role": "tool", "tool_call_id": msg.S(tc, "id"),
+					"content": "用户请求停止，未执行此工具",
+				})
+				continue
+			}
+			fn, _ := tc["function"].(map[string]any)
+			if fn == nil {
+				fn = map[string]any{}
+			}
+			name := msg.S(fn, "name")
+			var args map[string]any
+			if err := json.Unmarshal([]byte(msg.S(fn, "arguments")), &args); err != nil {
+				args = map[string]any{}
+			}
+
+			// 权限判断：ask 模式下可写工具（内置或 MCP）需审批
+			var result string
+			if a.Mode == ModeAsk && (tools.IsWriteTool(name) || a.isMCPWrite(name)) {
+				summary := tools.DescribeArguments(name, args)
+				allow := true
+				if a.OnApproval != nil {
+					allow = a.OnApproval(name, args, summary)
+				}
+				if !allow {
+					a.emit(msg.Event{"type": "tool_denied", "name": name})
+					result = "用户拒绝了工具调用 " + name
+				} else {
+					result = a.executeWithCache(name, args)
+				}
+			} else {
+				result = a.executeWithCache(name, args)
+			}
+
+			a.emit(msg.Event{"type": "tool_start", "name": name, "args": args})
+			a.emit(msg.Event{"type": "tool_result", "name": name, "result": result})
+			messages = append(messages, msg.Msg{
+				"role": "tool", "tool_call_id": msg.S(tc, "id"), "content": result,
+			})
+		}
+
+		a.emit(msg.Event{"type": "round", "n": roundNo})
+	}
+
+	a.Messages = messages
+	return strings.Join(finalText, ""), nil
+}
+
+func (a *Agent) usageTotalAny() map[string]any {
+	b, _ := json.Marshal(a.UsageTotal)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+// kbRetrieve 知识库自动注入（惰性导入避免内核对 codera 的静态依赖噪音）。
+func kbRetrieve(query string, topK int) string {
+	defer func() { _ = recover() }()
+	return coderaRetrieve(query, topK)
+}

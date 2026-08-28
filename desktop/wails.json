@@ -1,0 +1,13 @@
+# Wails 桌面构建配置
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "LocalAIStudio",
+  "outputfilename": "LocalAIStudio",
+  "frontend:install": "pnpm install",
+  "frontend:build": "pnpm build",
+  "frontend:dev:watcher": "pnpm dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Local AI Studio"
+  }
+}

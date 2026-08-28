@@ -1,0 +1,15 @@
+{
+  "title": "Local AI Writer · 短剧网文创作",
+  "features": {
+    "gpulocal": false,
+    "dispatch": true,
+    "editor": true,
+    "voice": true,
+    "mcp": true,
+    "attachments": true,
+    "sessions": true,
+    "rag": true,
+    "quant_tools": false
+  },
+  "exe_name": "LocalAIWriter"
+}

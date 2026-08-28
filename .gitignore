@@ -1,0 +1,25 @@
+# Go
+/localai
+/localai.exe
+/bin/
+*.test
+*.out
+
+# 桌面构建产物
+/desktop/bin/
+/desktop/build/bin/
+/desktop/frontend/dist/*
+!/desktop/frontend/dist/index.html
+/desktop/frontend/wailsjs/
+/desktop/frontend/node_modules/
+
+# 前端
+node_modules/
+*.local
+
+# IDE / 系统
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store

@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -215,7 +216,9 @@ func (r *RunManager) Send(sessionID string, model config.ModelConfig,
 		if title == "新会话" && len(a.Messages) > 0 {
 			title = firstUserTitle(a.Messages)
 		}
-		_ = sessions.Save(sessionID, a.Messages, title, tools.GetWorkspace(), notes)
+		if err := sessions.Save(sessionID, a.Messages, title, tools.GetWorkspace(), notes); err != nil {
+			log.Printf("sessions.Save(%s) 失败: %v", sessionID, err)
+		}
 		// 会话内容落盘 → 通知手机端刷新会话列表
 		r.fanout(msg.Event{"type": "sessions:changed"})
 		r.mu.Lock()

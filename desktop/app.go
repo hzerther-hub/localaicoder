@@ -205,7 +205,8 @@ type ProviderInfo struct {
 	Name      string      `json:"name"`
 	BaseURL   string      `json:"base_url"`
 	APIKey    string      `json:"api_key"`
-	APIFormat string      `json:"api_format"` // chat_completions / responses / opencode
+	APIKeys   []string    `json:"api_keys"`   // 凭据池（与 api_key 合并去重后的有效列表）
+	APIFormat string      `json:"api_format"` // chat_completions / anthropic_messages / responses / gemini
 	Enabled   bool        `json:"enabled"`
 	Models    []ModelInfo `json:"models"`
 }
@@ -227,6 +228,21 @@ func (a *App) ListProviders() []ProviderInfo {
 					p.APIFormat = str(pv["api_format"])
 					if p.APIFormat == "" {
 						p.APIFormat = "chat_completions"
+					}
+					// 凭据池：数组或逗号分隔字符串都支持（与内核 parseAPIKeys 一致）
+					switch v := pv["api_keys"].(type) {
+					case []any:
+						for _, x := range v {
+							if s := str(x); s != "" {
+								p.APIKeys = append(p.APIKeys, s)
+							}
+						}
+					case string:
+						for _, s := range strings.Split(v, ",") {
+							if s = strings.TrimSpace(s); s != "" {
+								p.APIKeys = append(p.APIKeys, s)
+							}
+						}
 					}
 				}
 			}
@@ -276,7 +292,8 @@ func providerIDOf(key string) string {
 }
 
 // SaveProvider 新增/更新一个供应商（provider 级配置）；返回是否成功。
-func (a *App) SaveProvider(id, name, baseURL, apiKey, apiFormat string) bool {
+// apiKeys 为凭据池（一个 key 也可只填 api_key；传 nil 不改动已有 api_keys）。
+func (a *App) SaveProvider(id, name, baseURL, apiKey, apiFormat string, apiKeys []string) bool {
 	if id == "" || baseURL == "" {
 		return false
 	}
@@ -292,19 +309,57 @@ func (a *App) SaveProvider(id, name, baseURL, apiKey, apiFormat string) bool {
 			if apiFormat != "" {
 				p["api_format"] = apiFormat
 			}
+			if apiKeys != nil {
+				if len(apiKeys) == 0 {
+					delete(p, "api_keys")
+				} else {
+					p["api_keys"] = toAnySlice(apiKeys)
+				}
+			}
 			found = true
 		}
 	}
 	if !found {
-		providers = append(providers, map[string]any{
+		entry := map[string]any{
 			"id": id, "name": name, "base_url": baseURL, "api_key": apiKey,
 			"api_format": orStr(apiFormat, "chat_completions"), "models": []any{},
-		})
+		}
+		if len(apiKeys) > 0 {
+			entry["api_keys"] = toAnySlice(apiKeys)
+		}
+		providers = append(providers, entry)
 	}
 	data["providers"] = providers
 	config.SaveModelsData(data)
 	return true
 }
+
+func toAnySlice(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
+}
+
+// ---------------- 智能路由（简单/复杂轮次分流） ----------------
+
+// GetSmartRouting 读智能路由配置（含默认值回退后的视图）。
+func (a *App) GetSmartRouting() map[string]any {
+	cfg := config.GetSmartRouting()
+	return map[string]any{
+		"enabled":          cfg.Enabled,
+		"configured":       cfg.Configured,
+		"simple_model":     cfg.SimpleModel,
+		"strong_model":     cfg.StrongModel,
+		"simple_max_chars": cfg.SimpleMaxChars,
+		"simple_max_words": cfg.SimpleMaxWords,
+		"arbitrate":        cfg.Arbitrate,
+	}
+}
+
+// SetSmartRouting 归一并落盘 smart_routing 块。
+func (a *App) SetSmartRouting(block map[string]any) { config.SetSmartRouting(block) }
 
 func orStr(s, def string) string {
 	if s != "" {
@@ -843,7 +898,7 @@ func (a *App) SetDispatchConfig(cfg map[string]any) {
 		config.SetDispatchSmart(v)
 	}
 	if v, ok := cfg["auto_cloud_fallback"].(bool); ok {
-		_ = v
+		config.SetAutoCloudFallback(v)
 	}
 	if v, ok := cfg["dispatch_model"].(string); ok {
 		config.SetDispatchModel(v)

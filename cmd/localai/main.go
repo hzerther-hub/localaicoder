@@ -137,6 +137,14 @@ func chatCmd(args []string) {
 			case "model_switch":
 				fmt.Printf("\n⚠️ 模型切换: %s → %s\n", msg.S(e, "from"),
 					msg.S(msg.M(e, "to"), "display_name"))
+			case "routing":
+				label := map[string]string{"simple": "简单轮→轻量模型", "strong": "复杂轮→强力模型",
+					"escalate": "轻量失败→升级重试"}[msg.S(e, "decision")]
+				if label == "" {
+					label = msg.S(e, "decision")
+				}
+				fmt.Printf("\n🧭 %s: %s\n", label,
+					msg.S(msg.M(e, "model"), "display_name"))
 			}
 			out.Flush()
 		},

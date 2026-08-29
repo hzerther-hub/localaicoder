@@ -45,13 +45,13 @@ func PathInWorkspace(path, root string) bool {
 // 高危 shell 命令（大小写不敏感）：只拦"一眼 destructive"的操作。
 var blockedShellPatterns = []string{
 	`\brm\s+(?:-\w+\s+)*-\w*[rf]\w*\s+/(?:\s|$|\*)`,  // rm -rf / 或 rm -rf /*
-	`\bmkfs(?:\.\w+)?\b`,                              // 格式化文件系统
-	`\bdd\s+[^|;]*\bof=/dev/`,                          // dd 直写块设备
-	`:\(\)\s*\{`,                                       // fork bomb :(){ :|:& };:
-	`\b(?:shutdown|reboot|poweroff|halt)\b`,            // 关机/重启
-	`\bformat\s+[a-zA-Z]:`,                             // Windows 格式化盘符
-	`\b(?:rd|rmdir)\s+/s\s+/q\s+[a-zA-Z]:[\\/]?\s*$`,   // rd /s /q C:\
-	`\bdel\s+(?:/[sqfSQF]+\s+)+[a-zA-Z]:[\\/]\*`,          // del /s /q C:\*
+	`\bmkfs(?:\.\w+)?\b`,                             // 格式化文件系统
+	`\bdd\s+[^|;]*\bof=/dev/`,                        // dd 直写块设备
+	`:\(\)\s*\{`,                                     // fork bomb :(){ :|:& };:
+	`\b(?:shutdown|reboot|poweroff|halt)\b`,          // 关机/重启
+	`\bformat\s+[a-zA-Z]:`,                           // Windows 格式化盘符
+	`\b(?:rd|rmdir)\s+/s\s+/q\s+[a-zA-Z]:[\\/]?\s*$`, // rd /s /q C:\
+	`\bdel\s+(?:/[sqfSQF]+\s+)+[a-zA-Z]:[\\/]\*`,     // del /s /q C:\*
 }
 
 var compiledBlocked = func() []*regexp.Regexp {

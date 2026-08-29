@@ -242,6 +242,14 @@ func GetSystemPrompt() string {
 
 // ---------------- models.json ----------------
 
+// API 协议格式（provider.api_format，模型级可覆盖；空 = chat_completions）。
+const (
+	FormatChatCompletions = "chat_completions"
+	FormatAnthropic       = "anthropic_messages"
+	FormatResponses       = "responses"
+	FormatGemini          = "gemini"
+)
+
 // ModelConfig 一个可用的模型：provider + model + 端点。
 type ModelConfig struct {
 	Key              string // 唯一键，格式 "provider_id/model_id"
@@ -250,6 +258,10 @@ type ModelConfig struct {
 	DisplayName      string
 	BaseURL          string
 	APIKey           string
+	APIKeys          []string // 凭据池（provider 级 api_keys 与 api_key 合并去重）；轮换/冷却见 llm.CredentialPool
+	APIFormat        string   // 线上协议格式；空 = chat_completions
+	AuthHeader       string   // 自定义认证头名；空 = 按格式取默认（Authorization/x-api-key/…）
+	PromptAddendum   string   // 附加系统提示段（provider 级，模型级可覆盖）；追加在动态区末尾
 	Vision           bool     // 支持识图（多模态输入）
 	Reasoning        bool     // 支持推理等级
 	ReasoningEffort  string   // 推理等级；空 = 不发送，用模型默认
@@ -259,6 +271,69 @@ type ModelConfig struct {
 	PriceInHitPerM  float64 `json:"price_in_hit_per_m"`
 	PriceInMissPerM float64 `json:"price_in_miss_per_m"`
 	PriceOutPerM    float64 `json:"price_out_per_m"`
+}
+
+// NormalizedFormat 归一 api_format：opencode 等价 chat_completions，未知值回退默认。
+func NormalizedFormat(f string) string {
+	f = strings.ToLower(strings.TrimSpace(f))
+	switch f {
+	case "":
+		return FormatChatCompletions
+	case FormatChatCompletions, "opencode", "chat":
+		return FormatChatCompletions
+	case FormatAnthropic, "anthropic", "claude":
+		return FormatAnthropic
+	case FormatResponses, "openai_responses":
+		return FormatResponses
+	case FormatGemini, "google":
+		return FormatGemini
+	}
+	return FormatChatCompletions
+}
+
+// apiKeyPlaceholders 明显的占位/坏配置哨兵，不进凭据池（对齐 openclaude
+// isCredentialPlaceholder：坏值宁可不用也不能伪装可用）。
+var apiKeyPlaceholders = map[string]bool{
+	"null": true, "undefined": true, "your-api-key": true, "your_key": true,
+	"your-api-key-here": true, "changeme": true, "change_me": true,
+	"sk-xxx": true, "sk-...": true, "sua_chave": true, "<api_key>": true,
+}
+
+// parseAPIKeys 解析 provider 级凭据池：api_keys（数组或逗号分隔字符串）与
+// api_key 合并去重；占位符剔除。全部被剔除但 api_key 非空时保留原值，
+// 兼容本地端点的 "local-noauth" 等约定值。
+func parseAPIKeys(p map[string]any) []string {
+	var raw []string
+	switch v := p["api_keys"].(type) {
+	case []any:
+		for _, x := range v {
+			raw = append(raw, strings.TrimSpace(msg.S(map[string]any{"x": x}, "x")))
+		}
+	case string:
+		for _, s := range strings.Split(v, ",") {
+			raw = append(raw, strings.TrimSpace(s))
+		}
+	}
+	if k := strings.TrimSpace(msg.S(p, "api_key")); k != "" {
+		raw = append(raw, k)
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, k := range raw {
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		if apiKeyPlaceholders[strings.ToLower(k)] {
+			continue
+		}
+		out = append(out, k)
+	}
+	if len(out) == 0 && msg.S(p, "api_key") != "" {
+		// 池里全是占位符：回退原始 api_key，保持旧行为（连接时才报错）
+		return []string{strings.TrimSpace(msg.S(p, "api_key"))}
+	}
+	return out
 }
 
 // 推理等级支持集合：DeepSeek 扩展集 vs 标准集
@@ -425,6 +500,9 @@ func loadModelsLocked() ([]ModelConfig, string) {
 		}
 		baseURL := msg.S(p, "base_url")
 		apiKey := msg.S(p, "api_key")
+		apiKeys := parseAPIKeys(p)
+		pFormat := NormalizedFormat(msg.S(p, "api_format"))
+		authHeader := strings.TrimSpace(msg.S(p, "auth_header"))
 		for _, mv := range msg.L(p, "models") {
 			m, ok := mv.(map[string]any)
 			if !ok {
@@ -436,6 +514,15 @@ func loadModelsLocked() ([]ModelConfig, string) {
 				mname = mid
 			}
 			prices := providerPrices(p)
+			// 模型级 api_format / prompt_addendum 覆盖 provider 级
+			mFormat := NormalizedFormat(msg.S(m, "api_format"))
+			if msg.S(m, "api_format") == "" {
+				mFormat = pFormat
+			}
+			addendum := strings.TrimSpace(msg.S(p, "prompt_addendum"))
+			if s := strings.TrimSpace(msg.S(m, "prompt_addendum")); s != "" {
+				addendum = s
+			}
 			models = append(models, ModelConfig{
 				Key:              pid + "/" + mid,
 				ProviderName:     pname,
@@ -443,6 +530,10 @@ func loadModelsLocked() ([]ModelConfig, string) {
 				DisplayName:      mname,
 				BaseURL:          baseURL,
 				APIKey:           apiKey,
+				APIKeys:          apiKeys,
+				APIFormat:        mFormat,
+				AuthHeader:       authHeader,
+				PromptAddendum:   addendum,
 				Vision:           msg.B(m, "vision"),
 				Reasoning:        msg.B(m, "reasoning") || msg.S(m, "reasoning_effort") != "",
 				ReasoningEffort:  msg.S(m, "reasoning_effort"),
@@ -660,6 +751,9 @@ func SetModelDispatch(on bool) { setDispatchBool("model_dispatch", on) }
 // SetDispatchSmart 开关智排。
 func SetDispatchSmart(on bool) { setDispatchBool("dispatch_smart", on) }
 
+// SetAutoCloudFallback 开关本地不可用自动回退云端。
+func SetAutoCloudFallback(on bool) { setDispatchBool("auto_cloud_fallback", on) }
+
 // SetDispatchModel 设置本地大脑模型 key。
 func SetDispatchModel(key string) { setDispatchStr("dispatch_model", key) }
 
@@ -684,6 +778,98 @@ func DispatchTargetLabel(key string) string {
 		return "云端识图"
 	}
 	return key
+}
+
+// ---------------- 智能路由（简单/复杂轮次分流） ----------------
+
+// 智能路由默认阈值（对齐 openclaude SmartRoutingConfig）。
+const (
+	SmartRouteDefaultMaxChars = 160
+	SmartRouteDefaultMaxWords = 28
+)
+
+// SmartRoutingConfig 简单/复杂轮次智能路由配置。
+// simple_model / strong_model 为模型 key；缺省回退 dispatch_flash / dispatch_pro。
+type SmartRoutingConfig struct {
+	Enabled        bool   // 总开关；未显式配置时回退旧 dispatch_smart 开关
+	Configured     bool   // models.json 里是否显式写了 smart_routing 块
+	SimpleModel    string
+	StrongModel    string
+	SimpleMaxChars int    // ≤ 此字符数且无强信号 → simple（默认 160）
+	SimpleMaxWords int    // ≤ 此词数且无强信号 → simple（默认 28）
+	Arbitrate      bool   // unsure 时用本地大脑（dispatch_model）仲裁
+}
+
+// GetSmartRouting 读 smart_routing 配置并解析回退：
+// enabled 未写 → 旧 dispatch_smart；simple/strong 未写 → dispatch_flash / dispatch_pro。
+func GetSmartRouting() SmartRoutingConfig {
+	data := LoadModelsData()
+	block, _ := data["smart_routing"].(map[string]any)
+	cfg := SmartRoutingConfig{
+		Configured:     block != nil,
+		SimpleMaxChars: SmartRouteDefaultMaxChars,
+		SimpleMaxWords: SmartRouteDefaultMaxWords,
+		Arbitrate:      true,
+	}
+	if block != nil {
+		cfg.Enabled = msg.B(block, "enabled")
+		cfg.SimpleModel = msg.S(block, "simple_model")
+		cfg.StrongModel = msg.S(block, "strong_model")
+		cfg.Arbitrate = block["arbitrate"] == nil || msg.B(block, "arbitrate") // 缺省开
+		if n := msg.I(block, "simple_max_chars"); n > 0 {
+			cfg.SimpleMaxChars = n
+		}
+		if n := msg.I(block, "simple_max_words"); n > 0 {
+			cfg.SimpleMaxWords = n
+		}
+	}
+	// 注意：块缺失时 Enabled 保持 false——旧 dispatch_smart 开关从未有实现，
+	// 若默认开启会让本地会话悄悄全量路由到云端，违背本地优先；显式配置才启用。
+	if cfg.SimpleModel == "" {
+		cfg.SimpleModel = GetDispatchFlash()
+	}
+	if cfg.StrongModel == "" {
+		cfg.StrongModel = GetDispatchPro()
+	}
+	return cfg
+}
+
+// SetSmartRouting 归一并落盘 smart_routing 块（桌面设置面板用）；
+// 传 nil 删除该块（回退到 dispatch_smart 兼容行为）。
+func SetSmartRouting(block map[string]any) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	if block == nil {
+		delete(data, "smart_routing")
+		saveModelsDataLocked(data)
+		return
+	}
+	out := map[string]any{}
+	if b, ok := block["enabled"].(bool); ok {
+		out["enabled"] = b
+	}
+	if s := strings.TrimSpace(msg.S(block, "simple_model")); s != "" {
+		out["simple_model"] = s
+	}
+	if s := strings.TrimSpace(msg.S(block, "strong_model")); s != "" {
+		out["strong_model"] = s
+	}
+	if n := msg.I(block, "simple_max_chars"); n > 0 {
+		out["simple_max_chars"] = n
+	}
+	if n := msg.I(block, "simple_max_words"); n > 0 {
+		out["simple_max_words"] = n
+	}
+	if b, ok := block["arbitrate"].(bool); ok {
+		out["arbitrate"] = b
+	}
+	if len(out) == 0 {
+		delete(data, "smart_routing")
+	} else {
+		data["smart_routing"] = out
+	}
+	saveModelsDataLocked(data)
 }
 
 // ---------------- 公司知识库（企业代码 RAG） ----------------

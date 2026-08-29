@@ -6,6 +6,7 @@ import { useStore, t } from '../store'
 
 interface ProviderView {
   id: string; name: string; base_url: string; api_key: string; api_format: string
+  api_keys?: string[]  // 凭据池（编辑框里一行一个）
   enabled: boolean; models: any[]
 }
 
@@ -15,7 +16,7 @@ const STATE_DOT: Record<string, { c: string; label: string }> = {
   stopped: { c: 'var(--text-faint)', label: '未运行' },
 }
 
-const API_FORMATS = ['chat_completions', 'responses', 'opencode']
+const API_FORMATS = ['chat_completions', 'anthropic_messages', 'responses', 'gemini', 'opencode']
 
 export default function ModelPanel() {
   const show = useStore((s) => s.showModelPanel)
@@ -93,7 +94,8 @@ export default function ModelPanel() {
   const save = async () => {
     if (!draft) return
     if (!draft.base_url) { setErr(t('Base URL 必填', 'Base URL required')); return }
-    await api.saveProvider(draft.id, draft.name, draft.base_url, draft.api_key, draft.api_format)
+    const apiKeys = (draft.api_keys || []).filter((k) => k.trim())
+    await api.saveProvider(draft.id, draft.name, draft.base_url, draft.api_key, draft.api_format, apiKeys)
     setEditing(false)
     setCandidates(null)
     reload()
@@ -132,7 +134,7 @@ export default function ModelPanel() {
               </div>
             ))}
             <button className="mm-add-provider" onClick={() => {
-              setDraft({ id: 'custom', name: t('自定义', 'Custom'), base_url: '', api_key: '', api_format: 'chat_completions', enabled: true, models: [] })
+              setDraft({ id: 'custom', name: t('自定义', 'Custom'), base_url: '', api_key: '', api_format: 'chat_completions', api_keys: [], enabled: true, models: [] })
               setEditing(true); setErr('')
             }}>＋ {t('添加供应商', 'Add provider')}</button>
           </div>
@@ -162,6 +164,13 @@ export default function ModelPanel() {
                   </select>
                   <label>API Key</label>
                   <input type="password" value={draft.api_key} onChange={(e) => setDraft({ ...draft, api_key: e.target.value })} />
+                  <label>API Keys {t('池（一行一个，轮换/冷却容错）', 'pool (one per line, rotation on 401/429)')}</label>
+                  <textarea
+                    rows={3}
+                    value={(draft.api_keys || []).join('\n')}
+                    onChange={(e) => setDraft({ ...draft, api_keys: e.target.value.split('\n') })}
+                    placeholder={'sk-a\nsk-b'}
+                  />
                   {err && <div className="mm-err">{err}</div>}
                   <div className="mm-actions">
                     <button className="btn" onClick={() => setEditing(false)}>{t('取消', 'Cancel')}</button>

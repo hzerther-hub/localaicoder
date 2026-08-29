@@ -1,5 +1,5 @@
 // Package agent Agent 循环：流式 function-calling + 权限控制
-//（对译 Python agent.py；事件契约 1:1）。
+// （对译 Python agent.py；事件契约 1:1）。
 package agent
 
 import (
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"localai/internal/attach"
 	"localai/internal/cache"
@@ -17,6 +18,8 @@ import (
 	"localai/internal/mcp"
 	"localai/internal/media"
 	"localai/internal/msg"
+	"localai/internal/prompt"
+	"localai/internal/routing"
 	"localai/internal/tools"
 )
 
@@ -39,6 +42,13 @@ type Usage struct {
 	CostUSDFloat float64 `json:"cost_usd"`
 }
 
+// RoutingTally 智能路由会话级计数（随 usage 事件透出给 UI）。
+type RoutingTally struct {
+	Simple      int `json:"simple"`
+	Strong      int `json:"strong"`
+	Escalations int `json:"escalations"`
+}
+
 // Agent 执行一次完整的对话：提问 → 工具调用 → 最终回答。
 type Agent struct {
 	OnEvent    func(msg.Event)                                             // 事件回调（12 种，见 agent.py 契约）
@@ -47,12 +57,16 @@ type Agent struct {
 	Mode       string
 	Model      *config.ModelConfig
 
-	Messages   []msg.Msg // run 后是（可能被压缩过的）完整消息列表
-	UsageTotal Usage
-	CacheHits  int
-	CacheSaved int
-
+	Messages     []msg.Msg // run 后是（可能被压缩过的）完整消息列表
+	UsageTotal   Usage
+	CacheHits    int
+	CacheSaved   int
+	Routing      RoutingTally // 智能路由计数（会话级累计）
 	fallbackUsed bool
+
+	turnCount  int              // 用户轮计数（路由分类用）
+	turnRouted routing.Decision // 本轮路由决策；空 = 未路由
+	escalated  bool             // 本轮 simple→strong 是否已升级
 }
 
 // New 创建 Agent；mode 空值默认 always。
@@ -196,28 +210,44 @@ func (a *Agent) accumulateUsage(u map[string]any) {
 	}
 }
 
-func (a *Agent) usageEvent() msg.Event {
-	return msg.Event{
-		"type":  "usage",
-		"usage": nil,
-		"total": a.UsageTotal,
-	}
-}
-
 func (a *Agent) isMCPWrite(name string) bool {
 	return strings.HasPrefix(name, "mcp_") && mcp.GetManager().IsWriteTool(name)
 }
 
-func (a *Agent) toolSchemas() []map[string]any {
-	var base []map[string]any
-	if a.Mode == ModeReadonly {
-		base = tools.ReadOnlySchemas()
-	} else {
-		base = tools.ToolSchemas()
+// systemPrompt 构建本轮会话的系统提示（分区式：静态区跨会话缓存稳定，
+// 动态区携带环境/模型/语言）。仅会话首轮调用一次，此后随 messages 复用，
+// 多轮请求前缀保持逐字节稳定。
+func (a *Agent) systemPrompt() string {
+	ws := tools.GetWorkspace()
+	names := builtinToolNames(a.Mode == ModeReadonly)
+	return prompt.Join(prompt.Build(prompt.Options{
+		Model:     a.Model,
+		Workspace: ws,
+		Language:  config.GetLanguage(),
+		ToolNames: names,
+		GitInfo:   prompt.GitSummary(ws),
+		Date:      time.Now().Format("2006-01-02"),
+		Addendum:  a.Model.PromptAddendum,
+	}))
+}
+
+// builtinToolNames 当前条件暴露的内置工具名（与 toolSchemas 同源，MCP 除外）。
+func builtinToolNames(readonly bool) []string {
+	var out []string
+	for _, s := range tools.EnabledSchemas(readonly) {
+		if fn, ok := s["function"].(map[string]any); ok {
+			if n := msg.S(fn, "name"); n != "" {
+				out = append(out, n)
+			}
+		}
 	}
-	base = append(base, tools.CallModelSchema()...) // 模型派发开启时提供 call_model
-	base = append(base, tools.KBSchema()...)        // 知识库启用时提供 kb_search
-	mgr := mcp.GetManager()                         // 合并 MCP 外部服务器工具
+	return out
+}
+
+func (a *Agent) toolSchemas() []map[string]any {
+	// 内置工具：注册表统一处理条件暴露（kb_search/call_model 等）与只读过滤
+	base := tools.EnabledSchemas(a.Mode == ModeReadonly)
+	mgr := mcp.GetManager() // 合并 MCP 外部服务器工具
 	if mgr.Connected() && mgr.ToolMapLen() > 0 {
 		extra := mgr.ToolSchemas()
 		if a.Mode == ModeReadonly {
@@ -276,19 +306,141 @@ func (a *Agent) cloudFallback(errText string) *config.ModelConfig {
 	return nil
 }
 
+// ---------------- 智能路由（简单/复杂轮次分流） ----------------
+
+// routeTurn 每次用户提问分类一次并钉住本轮：简单轮走轻量模型、
+// 复杂轮走强力模型。路由不改变消息历史，只切换本轮的 a.Model。
+func (a *Agent) routeTurn(userMessage string, attachments []any) {
+	if a.Model == nil {
+		return
+	}
+	cfg := config.GetSmartRouting()
+	if !cfg.Enabled {
+		return
+	}
+	in := routing.Input{
+		UserText:          userMessage,
+		HasNonTextContent: hasNonTextAttachment(attachments),
+		TurnNumber:        a.turnCount,
+	}
+	key, decision := routing.Resolve(in, routing.Config{
+		Enabled:        cfg.Enabled,
+		SimpleModel:    cfg.SimpleModel,
+		StrongModel:    cfg.StrongModel,
+		SimpleMaxChars: cfg.SimpleMaxChars,
+		SimpleMaxWords: cfg.SimpleMaxWords,
+		Arbitrate:      cfg.Arbitrate,
+	})
+	if key == "" {
+		return
+	}
+	// 计数与事件按「决策」记（决策=当前模型也记），UI 才能看到每轮走向
+	a.turnRouted = decision
+	switch decision {
+	case routing.DecisionSimple:
+		a.Routing.Simple++
+	case routing.DecisionStrong:
+		a.Routing.Strong++
+	}
+	if key == a.Model.Key {
+		a.emit(msg.Event{"type": "routing", "decision": string(decision),
+			"from": a.Model.Key, "model": modelInfo(a.Model)})
+		return
+	}
+	mc := config.FindModel(key)
+	if mc == nil {
+		return
+	}
+	old := *a.Model
+	*a.Model = *mc
+	a.emit(msg.Event{"type": "routing", "decision": string(decision),
+		"from": old.Key, "model": modelInfo(mc)})
+}
+
+// escalateToStrong 简单路由模型出错时的升级重试：换 strong 再来一轮。
+// 返回是否升级成功（每轮最多一次）。
+func (a *Agent) escalateToStrong() bool {
+	if a.escalated || a.turnRouted != routing.DecisionSimple || a.Model == nil {
+		return false
+	}
+	cfg := config.GetSmartRouting()
+	if cfg.StrongModel == "" {
+		return false
+	}
+	mc := config.FindModel(cfg.StrongModel)
+	if mc == nil {
+		return false
+	}
+	a.escalated = true
+	a.Routing.Escalations++
+	old := *a.Model
+	*a.Model = *mc
+	a.emit(msg.Event{"type": "text", "delta": fmt.Sprintf(
+		"\n⚠️ 轻量模型 %s 处理失败，升级到 %s 重试本轮。\n", old.DisplayName, mc.DisplayName)})
+	a.emit(msg.Event{"type": "routing", "decision": "escalate",
+		"from": old.Key, "model": modelInfo(mc)})
+	return true
+}
+
+// routedRetryable 简单模型的错是否值得升级重试：404/429/5xx/网络错误可重试；
+// 400/401/403 是请求侧问题，升级也救不了。
+func routedRetryable(errText string) bool {
+	if strings.HasPrefix(errText, "连接失败") {
+		return true
+	}
+	for _, code := range []string{"HTTP 404", "HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504"} {
+		if strings.Contains(errText, code) {
+			return true
+		}
+	}
+	return false
+}
+
+func modelInfo(mc *config.ModelConfig) map[string]any {
+	return map[string]any{
+		"key": mc.Key, "display_name": mc.DisplayName,
+		"base_url": mc.BaseURL, "model_id": mc.ModelID,
+	}
+}
+
+// hasNonTextAttachment 附件里是否有非文本内容（图片/音视频等媒体）。
+// 文档类附件经就地分析后本质是文本，不算非文本。
+func hasNonTextAttachment(attachments []any) bool {
+	for _, av := range attachments {
+		if att, ok := av.(map[string]any); ok {
+			if msg.S(att, "kind") == "snippet" {
+				continue // 代码片段是文本
+			}
+			return true
+		}
+		if path, ok := av.(string); ok {
+			switch media.Classify(path) {
+			case "image", "audio", "video":
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Run 同步运行整个 Agent 循环，返回最终文本。
 // history 非空则在其后追加本轮提问（多会话延续对话）；
 // attachments 为本轮附件（路径字符串或 snippet 字典）。
 func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (string, error) {
-	userMsg := a.buildUserMessage(userMessage, attachments)
+	a.turnCount++
+	a.turnRouted = ""
+	a.escalated = false
 	a.fallbackUsed = false
+	// 智能路由：本轮提问先分类钉住模型（不做也完全兼容）
+	a.routeTurn(userMessage, attachments)
+	userMsg := a.buildUserMessage(userMessage, attachments)
 	var messages []msg.Msg
 	if history != nil {
 		messages = history
 		messages = append(messages, userMsg)
 	} else {
 		messages = []msg.Msg{
-			{"role": "system", "content": config.GetSystemPrompt()},
+			{"role": "system", "content": a.systemPrompt()},
 			userMsg,
 		}
 	}
@@ -358,6 +510,7 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 					a.accumulateUsage(u)
 					a.emit(msg.Event{
 						"type": "usage", "usage": u, "total": a.usageTotalAny(),
+						"routing": a.routingTotalAny(),
 					})
 				}
 			}
@@ -368,9 +521,13 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 			return nil
 		})
 		if streamErr != nil && !errors.Is(streamErr, llm.ErrStop) {
+			errText := streamErr.Error()
+			// 智能路由升级：简单路由模型可重试错误 → 升 strong 再来一轮（每轮一次）
+			if a.turnRouted == routing.DecisionSimple && routedRetryable(errText) && a.escalateToStrong() {
+				continue
+			}
 			// 本地模型不可用（加载中/未运行）→ 自动切云端重试本轮；
 			// 回退模型再失败就直接报错，不连环回退。
-			errText := streamErr.Error()
 			fb := a.cloudFallback(errText)
 			reason := "未在运行，请先启动本地模型"
 			if strings.Contains(errText, "503") {
@@ -503,6 +660,13 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 
 func (a *Agent) usageTotalAny() map[string]any {
 	b, _ := json.Marshal(a.UsageTotal)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+func (a *Agent) routingTotalAny() map[string]any {
+	b, _ := json.Marshal(a.Routing)
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
 	return m

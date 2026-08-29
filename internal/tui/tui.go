@@ -222,6 +222,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t2 := msgpkg.M(e, "total")
 			m.usage = fmt.Sprintf("tokens=%v in=%v out=%v cached=%v",
 				t2["total_tokens"], t2["prompt_tokens"], t2["completion_tokens"], t2["cached_tokens"])
+		case "routing":
+			label := map[string]string{"simple": "简单轮", "strong": "复杂轮", "escalate": "升级重试"}[msgpkg.S(e, "decision")]
+			if label == "" {
+				label = msgpkg.S(e, "decision")
+			}
+			m.flushBuf()
+			m.lines = append(m.lines, dimStyle.Render("🧭 "+label+" → "+msgpkg.S(msgpkg.M(e, "model"), "display_name")))
 		case "model_switch":
 			m.flushBuf()
 			m.lines = append(m.lines, amberStyle.Render("⚠ 模型切换 → "+msgpkg.S(msgpkg.M(e, "to"), "display_name")))

@@ -40,19 +40,25 @@ mkdir -p /opt/relay-server && cd /opt/relay-server
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
-## 3. 配置 config.json
+## 3. 服务器配置（config.json 字段说明）
 
 ```bash
 cat > /opt/relay-server/config.json <<'EOF'
 {{
   "listen": "127.0.0.1:9000",
-  "device_tokens": ["在这里粘64位token"]
+  "device_tokens": ["<设备A的64位token>", "<设备B的64位token>"]
 }}
 EOF
 ```
 
-- `listen` 只绑本机回环，公网 TLS 由 Caddy 承担（第 4 步）。
-- `device_tokens`：多个 = 多人各自控制自己的机器；一个 token 被多人分享 = 多人共用同一台。
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `listen` | string | 只绑本机回环（`127.0.0.1:9000`）；公网 TLS 由 Caddy 承担，**不要**改绑 `0.0.0.0` 裸暴露 |
+| `device_tokens` | string[] | **白名单**：只有列出的 token 才被允许（桌面 `/client` 与手机 `/s/ws` 都要校验）。每个 token = 一台设备身份；加多个 = 多人各自控制自己的机器；一个 token 被多人分享 = 多人共用同一台 AI |
+
+> 一个 token 两用：桌面连服务器的凭证（`/client?d=<token>`）+ 手机链接的 `d=<token>`。**三处必须完全一致**：服务器 `device_tokens[]`、桌面面板 token、手机 URL。改 token = 作废旧链接（换配置需重启）。
+
+- ⚠️ **域名别写错**：正确是 `wss://biancheng.mei.biz`（**.biz**）；`biancheng.mei.bz` 解析到多个 IP 且 443 不通，**不可用**。
 
 ## 4. Caddy 终结 TLS
 
@@ -66,7 +72,7 @@ EOF
 systemctl reload caddy
 ```
 
-Caddy 会自动申请并续期 Let's Encrypt 证书。
+Caddy 会自动申请并续期 Let's Encrypt 证书。桌面端与手机走 `wss://`/`https://`，需 Caddy 的 443。
 
 ## 5. systemd 常驻
 
@@ -103,13 +109,15 @@ curl -s -o /dev/null -w "%{{http_code}}\\n" "http://127.0.0.1:9000/s/?d=wrong"
 curl -s "http://127.0.0.1:9000/s/?d=testtoken123" | grep -c "项目会话"
 ```
 
-## 7. 桌面端（用户侧，你只负责告知）
+## 7. 桌面端配置（用户侧）
 
-1. 用户打开 📱 面板 → 🌐 自建中继。
-2. 服务器地址填：`wss://{DOMAIN}`（填 `https://{DOMAIN}` 也可，桌面端自动转 `wss://`）。
-3. 点「生成」得到 64 位 token → 写入服务器 `config.json` 的 `device_tokens[]` → `systemctl restart relay-server`。
-4. 用户点「连接」，状态点变绿即成功。
-5. 手机打开：`https://{DOMAIN}/s/?d=<同token>`。
+1. 用户打开 📱 面板底部 → 🌐 自建中继（跨网）。
+2. **服务器地址** 填：`wss://{DOMAIN}`（填 `https://{DOMAIN}` 也可，桌面端自动转 `wss://`）。
+3. 点「**生成**」得到 **64 位 token** → 写入服务器 `config.json` 的 `device_tokens[]` → `systemctl restart relay-server`。
+4. 用户点「**连接**」，状态点变绿 = `已连接`（出站 WS 直连，自动绕过本机 `HTTPS_PROXY`）。
+5. 手机打开：`https://{DOMAIN}/s/?d=<同token>` → 即为手机控制台（模型/推理/权限切换 + 会话 + 快捷命令）。
+
+> 桌面端配置存于本机 `models.json` 顶层 `relay` 块（`server_url`/`device_token`），改动后**重启应用**才会重新自动连接。
 
 ## 8. 安全清单（勿省）
 

@@ -11,12 +11,14 @@
 - **凭据池轮换**：provider 级 `api_keys` 多 key 池，401/403 永久驱逐、402/429 冷却 30s 自动换 key 重试，全冷却时退化为「最早解禁」的 key。
 - **智能路由**：每次提问本地启发式分类（首轮/代码块/关键词/长度→复杂，其余→简单），拿不准可让本地大脑仲裁；简单轮走轻量模型省钱、复杂轮走强力模型保质量，简单模型失败自动升级重试。
 - **分区式系统提示词**：静态/动态边界（跨会话 prompt cache 稳定）、按实际工具面生成的使用政策、环境信息（git/平台/日期）、小上下文模型极简模式、provider/模型级 `prompt_addendum` 自定义附加段。
-- **9 个内置工具**：read_file / write_file / list_dir / glob_search / grep_search / lsp_diagnostics / index_search / run_shell / web_search，外加按条件暴露的 `call_model`（模型派发）与 `kb_search`（公司知识库）。
+- **10 个内置工具**：`read_file` / `write_file` / `list_dir` / `glob_search` / `grep_search` / `lsp_diagnostics` / `index_search` / `run_shell` / `web_search` / `todo_write`（任务步骤清单，只读），外加按条件暴露的 `call_model`（模型派发）与 `kb_search`（公司知识库）。工具 schema 每轮按名称排序以产生字节稳定的请求前缀。
 - **多模型**：models.json 配置（provider 分组），DeepSeek 官方定价费用统计。
 - **LSP 智能提示**：多语言语义补全 + 诊断；语言服务器可自动安装到应用自包含目录。
 - **双 RAG**：工作区 `index_search`（TF-IDF）+ 公司多根知识库 `kb_search`（TF-IDF + 可选 embedding 混合检索）。
 - **MCP**：stdio 子进程 + streamable HTTP 客户端。
 - **会话管理**：SQLite 持久化，按项目(工作目录)分组，支持改名/删除/自动新会话。
+- **技能系统（skills）**：把成功会话经验沉淀为带 frontmatter 的 Markdown 技能，按触发词注入 system prompt；LLM 只产草稿、人握转正权。
+- **链接取材（weblinks）**：消息中的 http(s) 链接自动取材——图片下载做视觉附件、网页剥正文内联、失败折成注释行。
 - **桌面体验**：CodeMirror 编辑器（多语言高亮/LSP/选区加聊天）、内置多标签 PowerShell 终端（ConPTY）、微信式截图+标注、图片缩略图、多面板（模型/知识库/缓存/MCP/派发）。
 - **中文/英文** 双语界面。
 

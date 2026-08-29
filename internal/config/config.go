@@ -648,6 +648,156 @@ func GetFontSizeEditor() int { return fontSize("font_size_editor") }
 // SetFontSizeEditor 设置编辑器字号。
 func SetFontSizeEditor(n int) { setFontSize("font_size_editor", n) }
 
+// ---------------- 项目垃圾箱 / 定时任务（桌面端持久化，存 models.json 顶层） ----------------
+
+// GetProjectTrash 项目垃圾箱：已删除（侧栏隐藏）的项目工作目录列表。
+// 只隐藏不落盘删除——会话全部保留，可随时恢复。
+func GetProjectTrash() []string {
+	out := []string{}
+	for _, v := range msg.L(LoadModelsData(), "project_trash") {
+		if s, ok := v.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// SetProjectTrash 保存项目垃圾箱列表。
+func SetProjectTrash(paths []string) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	if paths == nil {
+		paths = []string{}
+	}
+	data["project_trash"] = paths
+	saveModelsDataLocked(data)
+}
+
+// GetScheduledTasks 定时任务列表（桌面端调度器消费；元素为松散 map，
+// 字段约定见 desktop/schedule.go 的 ScheduledTask）。
+func GetScheduledTasks() []map[string]any {
+	out := []map[string]any{}
+	for _, v := range msg.L(LoadModelsData(), "scheduled_tasks") {
+		if m, ok := v.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// SetScheduledTasks 保存定时任务列表。
+func SetScheduledTasks(tasks []map[string]any) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	if tasks == nil {
+		tasks = []map[string]any{}
+	}
+	data["scheduled_tasks"] = tasks
+	saveModelsDataLocked(data)
+}
+
+// ---------------- Bot 渠道（企业微信推送 / 飞书机器人） ----------------
+
+// GetWeComWebhook 企业微信群机器人 webhook 地址（任务结果推送用；空 = 未配置）。
+func GetWeComWebhook() string { return msg.S(LoadModelsData(), "wecom_webhook") }
+
+// SetWeComWebhook 保存企业微信 webhook 地址。
+func SetWeComWebhook(url string) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	if msg.S(data, "wecom_webhook") != url {
+		data["wecom_webhook"] = url
+		saveModelsDataLocked(data)
+	}
+}
+
+// GetFeishuConfig 飞书机器人配置（app_id/app_secret/allowlist 白名单，空格或逗号分隔的 open_id）。
+func GetFeishuConfig() map[string]any {
+	ch := msg.M(LoadModelsData(), "feishu")
+	return map[string]any{
+		"app_id":    msg.S(ch, "app_id"),
+		"app_secret": msg.S(ch, "app_secret"),
+		"allowlist":  msg.S(ch, "allowlist"),
+	}
+}
+
+// SetFeishuConfig 保存飞书机器人配置。
+func SetFeishuConfig(appID, appSecret, allowlist string) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	data["feishu"] = map[string]any{
+		"app_id":     appID,
+		"app_secret": appSecret,
+		"allowlist":  allowlist,
+	}
+	saveModelsDataLocked(data)
+}
+
+// GetLarkConfig Lark（国际版飞书）机器人配置 {app_id, app_secret, allowlist}。
+func GetLarkConfig() map[string]any {
+	d := msg.M(LoadModelsData(), "lark")
+	return map[string]any{
+		"app_id":     msg.S(d, "app_id"),
+		"app_secret": msg.S(d, "app_secret"),
+		"allowlist":  msg.S(d, "allowlist"),
+	}
+}
+
+// SetLarkConfig 保存 Lark 机器人配置。
+func SetLarkConfig(appID, appSecret, allowlist string) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	data["lark"] = map[string]any{
+		"app_id":     appID,
+		"app_secret": appSecret,
+		"allowlist":  allowlist,
+	}
+	saveModelsDataLocked(data)
+}
+
+// ---------------- 自建中继（跨网手机远程；桌面出站连用户服务器） ----------------
+
+// GetRelayConfig 中继配置 {server_url, device_token}。
+func GetRelayConfig() map[string]any {
+	d := msg.M(LoadModelsData(), "relay")
+	return map[string]any{
+		"server_url":   msg.S(d, "server_url"),
+		"device_token": msg.S(d, "device_token"),
+	}
+}
+
+// SetRelayConfig 保存中继配置。
+func SetRelayConfig(serverURL, deviceToken string) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	data["relay"] = map[string]any{"server_url": serverURL, "device_token": deviceToken}
+	saveModelsDataLocked(data)
+}
+
+// GetTelegramConfig Telegram 机器人配置 {bot_token, allowlist}。
+func GetTelegramConfig() map[string]any {
+	d := msg.M(LoadModelsData(), "telegram")
+	return map[string]any{
+		"bot_token":  msg.S(d, "bot_token"),
+		"allowlist":  msg.S(d, "allowlist"),
+	}
+}
+
+// SetTelegramConfig 保存 Telegram 机器人配置。
+func SetTelegramConfig(token, allowlist string) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	data["telegram"] = map[string]any{"bot_token": token, "allowlist": allowlist}
+	saveModelsDataLocked(data)
+}
+
 // ---------------- 模型派发（多模型路由） ----------------
 
 var dispatchDefaults = map[string]any{

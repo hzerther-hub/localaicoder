@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Local AI Studio · 中继</title>
+<style>
+*{box-sizing:border-box}
+ body{margin:0;background:#0d0e12;color:#e8e8ef;font:15px/1.55 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;display:flex;flex-direction:column;height:100dvh;-webkit-font-smoothing:antialiased}
+ header{display:flex;align-items:center;gap:8px;padding:9px 12px;background:rgba(22,23,31,.92);backdrop-filter:blur(10px);border-bottom:1px solid #23242f;position:sticky;top:0;z-index:6}
+ select{background:#14151d;border:1px solid #2a2b38;border-radius:10px;color:#e2e2ec;font-size:13.5px;padding:9px 10px;-webkit-appearance:none;appearance:none}
+ select:focus{outline:none;border-color:#6c5ce7}
+ #btnS{flex:none;background:#1a1b24;border:1px solid #2a2b38;border-radius:10px;color:#c9c9d8;font-size:13px;padding:9px 12px}
+ #proj{flex:1;min-width:0}
+ #run{color:#3ddc97;font-size:12px;flex:none;font-variant-numeric:tabular-nums}
+ .hrow{display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid #1c1d28;background:#131419}
+ .ctl{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+ .ctl span{font-size:10.5px;color:#7b7c8a;padding-left:2px}
+ .ctl select{width:100%;padding:6px 8px;font-size:12.5px}
+ .ctl:nth-child(2),.ctl:nth-child(3){flex:none;width:82px}
+ #mode{font-size:11px;color:#7b7c8a;text-align:center;padding:6px;background:#0f1014}
+ #log{flex:1;overflow-y:auto;padding:16px 14px 8px;display:flex;flex-direction:column;gap:10px}
+ .user{align-self:flex-end;max-width:84%;background:linear-gradient(135deg,#7c5ce8,#9a6cf0);color:#fff;padding:10px 14px;border-radius:16px 16px 4px 16px;white-space:pre-wrap;word-break:break-word}
+ .ai{align-self:flex-start;max-width:84%;background:#1a1b25;color:#e8e8ef;border:1px solid #2a2b38;padding:10px 14px;border-radius:16px 16px 16px 4px;white-space:pre-wrap;word-break:break-word}
+ .tool{align-self:flex-start;font-size:12px;color:#8b8b98;background:transparent;padding:0 4px}
+ .err{align-self:stretch;font-size:12.5px;color:#ff8ba0;background:rgba(255,107,129,.08);border:1px solid rgba(255,107,129,.22);padding:8px 12px;border-radius:12px}
+ .empty{color:#6a6b78;text-align:center;margin-top:44px;font-size:13.5px}
+  #qc{display:flex;flex-wrap:wrap;gap:9px 20px;padding:11px 14px;border-top:1px solid #1c1d28;background:#131419}
+ #qc span{color:#a6abbf;font-size:13.5px;cursor:pointer;line-height:1.7;white-space:nowrap;letter-spacing:.2px}
+ #qc span:active{color:#fff;text-decoration:underline}
+ form{display:flex;gap:8px;padding:10px 12px;border-top:1px solid #1c1d28;background:#131419}
+ form input{flex:1;background:#14151d;border:1px solid #2a2b38;border-radius:12px;padding:11px 14px;color:#e8e8ef;font-size:15px}
+ form input:focus{outline:none;border-color:#6c5ce7}
+ form button{background:linear-gradient(135deg,#6c5ce7,#8f6cf0);border:0;border-radius:12px;color:#fff;padding:0 20px;font-size:15px;font-weight:600}
+ #drawer{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;z-index:9}
+ #drawer.open{display:block}
+ #drawer .panel{position:absolute;left:0;top:0;bottom:0;width:82%;max-width:340px;background:#15161d;overflow-y:auto;padding:12px;box-shadow:2px 0 24px rgba(0,0,0,.5)}
+ .gr{font-size:11px;color:#7b7c8a;padding:10px 6px 6px;letter-spacing:.6px;text-transform:uppercase}
+ .s{padding:11px 12px;border-radius:12px;margin-bottom:4px;color:#d6d6e2;cursor:pointer;display:flex;gap:8px;align-items:center;background:#1a1b25}
+ .s:active{background:#23242f}
+ .s.on{background:linear-gradient(135deg,rgba(108,92,231,.2),rgba(143,108,240,.15));color:#cdc2ff;border:1px solid rgba(108,92,231,.35)}
+ .s .run{color:#3ddc97;flex:none}
+ .s .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+ .s .ago{font-size:11px;color:#7b7c8a;flex:none}
+ .s .s-act{flex:none;font-size:12px;color:#8b8b98;padding:2px 5px;border-radius:6px}
+ .s .s-act:active{background:#2a2b3a;color:#fff}
+ .s .s-act.del:active{color:#ff8ba0}
+ #slash{display:none;position:fixed;left:12px;right:12px;bottom:62px;background:#17181f;border:1px solid #2a2b38;border-radius:14px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.5);z-index:8}
+ #slash.open{display:block}
+ #slash .si{display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer;border-bottom:1px solid #1e1f29}
+ #slash .si:last-child{border-bottom:0}
+ #slash .si:active{background:#23242f}
+ #slash .si .k{flex:none;color:#8f7cf0;font-family:ui-monospace,SFMono-Regular,monospace;font-size:13px;font-weight:600}
+ #slash .si .d{flex:1;font-size:13px;color:#b9b9c8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+</style></head><body>
+<header>
+ <button id="btnS">☰ 会话</button>
+ <select id="proj"></select>
+ <span id="run"></span>
+</header>
+<div class="hrow">
+ <div class="ctl"><span>模型</span><select id="model"></select></div>
+ <div class="ctl"><span>推理</span><select id="effort"></select></div>
+ <div class="ctl"><span>权限</span><select id="modeSel"><option value="always">总是允许</option><option value="ask">询问</option><option value="readonly">只读</option></select></div>
+</div>
+<div id="mode"></div>
+<div id="drawer"><div class="panel" id="sessList"></div></div>
+<div id="log"><div class="empty">从左上选择一个会话开始</div></div>
+<div id="slash"></div>
+<div id="qc"><span data-p="列出当前项目的目录结构">列目录</span><span data-p="分析这个项目，找出可能的 BUG 并给出修复">找 BUG</span><span data-p="为最近的代码改动补充单元测试">写测试</span><span data-p="总结最近的 git 提交和改动要点">总结改动</span><span data-p="分析当前代码，给出重构建议">重构建议</span><span data-p="解释当前项目的作用和整体结构">这是什么</span></div>
+<form id="f"><input id="i" placeholder="发消息…" autocomplete="off"><button>发送</button></form>
+<script>
+const RELAY=true;
+const D=new URLSearchParams(location.search).get('d');
+const WS=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/s/ws?d='+D;
+const $=id=>document.getElementById(id);
+const log=$('log');
+let ALL=[],wsCur='',sid='',runs=new Set(),cur=null,ws,rid=0,lastCurrent='';
+const pend={};
+const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML;};
+const ago=ts=>{const d=Date.now()/1000-ts;if(d<60)return '刚刚';if(d<3600)return Math.floor(d/60)+'分';if(d<86400)return Math.floor(d/3600)+'时';return Math.floor(d/86400)+'天';};
+function req(o){return new Promise(res=>{const id=++rid;pend[id]=res;ws.send(JSON.stringify(Object.assign(o,{rid:id})));});}
+function add(cls,t){const d=document.createElement('div');d.className=cls;d.textContent=t;log.appendChild(d);log.scrollTop=log.scrollHeight;return d;}
+function connect(){
+ ws=new WebSocket(WS);
+ ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(_){return}
+  if(m.rid&&pend[m.rid]){pend[m.rid](m);delete pend[m.rid];return}
+  if(m.sessionId&&sid&&m.sessionId!==sid)return;
+  if(m.type==='user_message'){add('user',m.text);cur=null;}
+  else if(m.type==='text'){if(!cur)cur=add('ai','');cur.textContent+=m.delta;log.scrollTop=log.scrollHeight;}
+  else if(m.type==='tool'){add('tool','🔧 '+m.delta);}
+  else if(m.type==='error'){add('err',m.delta);cur=null;}
+  else if(m.type==='run:started'){runs.add(m.sessionId);mark(m.sessionId,true);badge();}
+  else if(m.type==='run:finished'){runs.delete(m.sessionId);mark(m.sessionId,false);badge();cur=null;}
+  else if(m.type==='model:changed'){loadModels();}
+  else if(m.type==='permission:changed'){try{$('modeSel').value=m.value}catch(e){}}
+  else if(m.type==='sessions:changed'){loadState();}
+ };
+ ws.onopen=()=>{loadState();loadModels();if(sid)openS(sid);};
+ ws.onclose=(e)=>{let why='';const c=e&&e.code;if(c&&c!==1000)why=' (code '+c+')';add('err','连接断开'+why+'，10 秒后重连…');setTimeout(()=>{log.innerHTML='';connect();},10000);};
+}
+function applyState(s){
+ ALL=s.sessions||[];
+ const map={};ALL.forEach(x=>{const k=x.workspace||'';(map[k]=map[k]||{n:0,u:0}).n++;map[k].u=Math.max(map[k].u,x.updated)});
+ const sel=$('proj');const keep=wsCur||s.workspace;
+ sel.innerHTML=Object.keys(map).sort((a,b)=>map[b].u-map[a].u).map(w=>'<option value="'+esc(w)+'">'+esc(w.split('/').filter(Boolean).pop()||w)+' ('+map[w].n+')</option>').join('');
+ wsCur=map[keep]?keep:(sel.options[0]?sel.options[0].value:'');sel.value=wsCur;
+ runs=new Set(ALL.filter(x=>x.running).map(x=>x.id));
+ $('mode').textContent='中继 '+D.slice(0,6)+'… · 权限 '+(s.mode||'')+(runs.size?' · '+runs.size+' 运行中':'');
+ try{$('modeSel').value=s.mode||'always'}catch(e){}
+ const _cur=s.current||'';if(_cur&&_cur!==lastCurrent){lastCurrent=_cur;loadModels();}
+ renderSess();badge();
+}
+function loadState(){req({type:'state'}).then(applyState);}
+function renderSess(){
+ const rows=ALL.filter(x=>(x.workspace||'')===wsCur).sort((a,b)=>b.updated-a.updated);
+ let h='<div class="gr">项目会话（'+rows.length+'）</div>';
+ rows.forEach(x=>{h+='<div class="s'+(x.id===sid?' on':'')+'" data-id="'+x.id+'">'
+  +(x.running?'<span class="run">▶</span>':'')+'<span class="t">'+esc(x.title)+'</span>'
+  +'<span class="s-act" data-act="rename">✎</span><span class="s-act del" data-act="del">🗑</span>'
+  +'<span class="ago">'+ago(x.updated)+'</span></div>';});
+ $('sessList').innerHTML=h||'<div class="gr">该项目暂无会话</div>';
+}
+function badge(){$('run').textContent=runs.size?'▶ '+runs.size:'';}
+function mark(id,on){ALL.forEach(x=>{if(x.id===id)x.running=on});renderSess();}
+async function openS(id){
+ sid=id;$('drawer').classList.remove('open');log.innerHTML='';cur=null;renderSess();
+ const m=await req({type:'messages',id});
+ if(m.messages&&m.messages.length)m.messages.forEach(x=>add(x.role==='user'?'user':'ai',x.text));
+ else log.innerHTML='<div class="empty">（空会话，直接发第一条消息）</div>';
+}
+async function loadModels(){
+ let d; try{ d=await req({type:'models'});}catch(e){d=null;}
+ const sel=$('model');
+ if(!d||!d.models||!d.models.length){ sel.innerHTML='<option value="">正在连接桌面…</option>'; fillEffort(null); return; }
+ sel.innerHTML=d.models.map(x=>'<option value="'+esc(x.key)+'"'+(x.is_current?' selected':'')+'>'+esc(x.model_id||x.display_name)+'</option>').join('');
+ fillEffort(d.models.find(x=>x.is_current)||null);
+}
+function fillEffort(mi){
+ const ef=$('effort');
+ const choices=(mi&&mi.reasoning&&mi.reasoning_choices)?mi.reasoning_choices:[];
+ ef.innerHTML=choices.length
+   ? choices.map(c=>'<option value="'+esc(c)+'"'+((mi.reasoning_effort||'')===c?' selected':'')+'>'+esc(c===''?'默认':c)+'</option>').join('')
+   : '<option value="">—</option>';
+ if(mi&&mi.reasoning_effort)ef.value=mi.reasoning_effort;
+}
+$('model').onchange=async()=>{const k=$('model').value;try{await req({type:'model',key:k});}catch(e){}
+ try{const d=await req({type:'models'});if(d)sel2models(d);}catch(e){}
+ function sel2models(d){const s=$('model');s.innerHTML=d.models.map(x=>'<option value="'+esc(x.key)+'"'+(x.is_current?' selected':'')+'>'+esc(x.model_id||x.display_name)+'</option>').join('');fillEffort(d.models.find(x=>x.is_current)||null);}
+};
+$('effort').onchange=async()=>{const k=$('model').value,e=$('effort').value;try{await req({type:'effort',key:k,effort:e});}catch(e){}};
+$('modeSel').onchange=async()=>{const v=$('modeSel').value;try{await req({type:'mode',value:v});}catch(e){}};
+$('sessList').onclick=e=>{const act=e.target.closest('.s-act');
+ if(act){const row=act.closest('.s');if(!row)return;const id=row.dataset.id;
+  if(act.dataset.act==='del'){ if(confirm('删除该会话？')) req({type:'delete_session',id}).then(()=>loadState()); }
+  else if(act.dataset.act==='rename'){ const nm=prompt('新标题',''); if(nm&&nm.trim()) req({type:'rename_session',id,title:nm.trim()}).then(()=>loadState()); }
+  return; }
+ const r=e.target.closest('.s');if(r)openS(r.dataset.id);};
+$('btnS').onclick=()=>{$('drawer').classList.toggle('open');if($('drawer').classList.contains('open'))loadState();};
+$('drawer').onclick=e=>{if(e.target.id==='drawer')$('drawer').classList.remove('open')};
+$('proj').onchange=()=>{wsCur=$('proj').value;renderSess();};
+$('qc').onclick=e=>{const b=e.target.closest('[data-p]');if(!b)return;const i=$('i');i.value=(i.value?i.value+'\n':'')+b.dataset.p;i.focus();};
+const CMDS=[['/列目录','列出当前项目的目录结构'],['/找bug','分析这个项目，找出可能的 BUG 并给出修复'],['/写测试','为最近的代码改动补充单元测试'],['/总结','总结最近的 git 提交和改动要点'],['/重构','分析当前代码，给出重构建议'],['/解释','解释当前项目的作用和整体结构']];
+function slashShow(q){
+ const box=$('slash');
+ const list=CMDS.filter(c=>!q||c[0].slice(1).toLowerCase().includes(q.toLowerCase())).slice(0,8);
+ if(!list.length){box.classList.remove('open');return;}
+ box.innerHTML=list.map(c=>'<div class="si" data-t="'+esc(c[1])+'"><span class="k">'+c[0]+'</span><span class="d">'+esc(c[1])+'</span></div>').join('');
+ box.classList.add('open');
+}
+$('i').addEventListener('input',()=>{const v=$('i').value;if(v.startsWith('/'))slashShow(v.slice(1));else $('slash').classList.remove('open');});
+$('slash').addEventListener('click',e=>{const si=e.target.closest('.si');if(!si)return;const i=$('i');i.value=si.dataset.t;i.focus();$('slash').classList.remove('open');});
+$('i').addEventListener('keydown',e=>{if(e.key==='Escape')$('slash').classList.remove('open');});
+$('f').onsubmit=ev=>{ev.preventDefault();
+ const i=$('i');const t=i.value.trim();if(!t||!sid)return;
+ i.value='';cur=null;
+ ws.send(JSON.stringify({type:'send',session:sid,text:t}));
+};
+connect();setInterval(loadState,8000);
+</script></body></html>

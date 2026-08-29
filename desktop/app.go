@@ -28,8 +28,8 @@ import (
 	"localai/internal/llm"
 	"localai/internal/localmodels"
 	"localai/internal/lsp"
-	"localai/internal/msg"
 	"localai/internal/mcp"
+	"localai/internal/msg"
 	"localai/internal/products"
 	"localai/internal/sessions"
 	"localai/internal/skills"
@@ -70,6 +70,11 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 	a.updateWindowTitle()
+	go a.scheduleLoop() // 定时任务调度器（desktop/schedule.go）
+	// 自建中继：启动时若已配置（server+token 均非空）自动连接，避免重启后手机端一直重连
+	if cfg := config.GetRelayConfig(); cfg["server_url"] != "" && cfg["device_token"] != "" {
+		go relayC.Connect(a, msg.S(cfg, "server_url"), msg.S(cfg, "device_token"))
+	}
 }
 
 // updateWindowTitle 窗口标题同步"产品名 · 模型名"（对齐 Python 版 _title_with_model：
@@ -161,6 +166,7 @@ func (a *App) SetWorkspace(dir string) string {
 	}
 	tools.SetWorkspace(dir)
 	config.SaveLastWorkspace(dir)
+	broadcastSessions(a)
 	return dir
 }
 
@@ -209,9 +215,9 @@ func toModelInfo(m config.ModelConfig, def, cur string) ModelInfo {
 		ReasoningEffort: m.ReasoningEffort, ReasoningChoices: m.ReasoningChoices,
 		ContextWindow: m.ContextWindow,
 		IsDefault:     m.Key == def, IsCurrent: m.Key == cur,
-		Local:     strings.Contains(m.BaseURL, "127.0.0.1") || strings.Contains(m.BaseURL, "localhost"),
-		Priced:    m.PriceInHitPerM > 0 || m.PriceInMissPerM > 0 || m.PriceOutPerM > 0,
-		PriceHit:  m.PriceInHitPerM, PriceMiss: m.PriceInMissPerM, PriceOut: m.PriceOutPerM,
+		Local:    strings.Contains(m.BaseURL, "127.0.0.1") || strings.Contains(m.BaseURL, "localhost"),
+		Priced:   m.PriceInHitPerM > 0 || m.PriceInMissPerM > 0 || m.PriceOutPerM > 0,
+		PriceHit: m.PriceInHitPerM, PriceMiss: m.PriceInMissPerM, PriceOut: m.PriceOutPerM,
 	}
 }
 
@@ -428,6 +434,10 @@ func (a *App) SetCurrentModel(key string) {
 	config.SetDefaultModel(key)
 	runtime.EventsEmit(a.ctx, "model:changed", key)
 	a.updateWindowTitle()
+	// 手机端实时同步模型（中继/局域网手机页）
+	if a.runner != nil {
+		a.runner.fanout(msg.Event{"type": "model:changed", "key": key})
+	}
 }
 
 // SetReasoningEffort 为当前模型保存推理等级。
@@ -435,6 +445,10 @@ func (a *App) SetReasoningEffort(key, effort string) {
 	config.UpdateModel(key, "", "", "", "", nil, nil, &effort)
 	runtime.EventsEmit(a.ctx, "model:changed", key)
 	a.updateWindowTitle()
+	// 手机端实时同步思考等级
+	if a.runner != nil {
+		a.runner.fanout(msg.Event{"type": "model:changed", "key": key, "effort": effort})
+	}
 }
 
 // FetchEndpointModels 探测端点 /models 列表（添加模型时自动填充 ID）。
@@ -539,6 +553,9 @@ func (a *App) LoadSession(id string) *LoadedSession {
 	a.mu.Lock()
 	a.sessionID = id
 	a.mu.Unlock()
+	if a.runner != nil {
+		a.runner.SeedHistory(id) // 内存历史为空时从 SQLite 播种（重启后续聊不丢上下文）
+	}
 	return &LoadedSession{
 		ID: s.ID, Title: s.Title, Workspace: s.Workspace,
 		Messages: s.Messages, Notes: s.Notes,
@@ -546,7 +563,48 @@ func (a *App) LoadSession(id string) *LoadedSession {
 }
 
 // DeleteSession 删除会话。
-func (a *App) DeleteSession(id string) bool { return sessions.Delete(id) }
+func (a *App) DeleteSession(id string) bool {
+	ok := sessions.Delete(id)
+	if ok {
+		broadcastSessions(a)
+	}
+	return ok
+}
+
+// ---------------- 项目垃圾箱 ----------------
+
+// GetProjectTrash 垃圾箱中的项目（工作目录）列表。
+func (a *App) GetProjectTrash() []string { return config.GetProjectTrash() }
+
+// TrashProject 删除项目：仅移入垃圾箱（会话保留，可随时恢复）。
+// 返回更新后的垃圾箱列表。
+func (a *App) TrashProject(ws string) []string {
+	if ws == "" {
+		return config.GetProjectTrash()
+	}
+	list := config.GetProjectTrash()
+	for _, v := range list {
+		if v == ws {
+			return list
+		}
+	}
+	list = append(list, ws)
+	config.SetProjectTrash(list)
+	return list
+}
+
+// RestoreProject 从垃圾箱恢复项目。返回更新后的垃圾箱列表。
+func (a *App) RestoreProject(ws string) []string {
+	old := config.GetProjectTrash()
+	list := make([]string, 0, len(old))
+	for _, v := range old {
+		if v != ws {
+			list = append(list, v)
+		}
+	}
+	config.SetProjectTrash(list)
+	return list
+}
 
 // RenameSession 改名。
 // RenameSession 重命名会话；「新会话」为系统保留名（空会话复用依赖），禁止使用。
@@ -573,6 +631,10 @@ func (a *App) SendMessage(text string, attachments []any) error {
 	if model == nil {
 		return fmt.Errorf("当前模型不可用: %s", a.modelKey)
 	}
+	// 用户消息事件：手机远程页与桌面聊天区以同一事件渲染用户气泡（双端同步）
+	ev := msg.Event{"type": "user_message", "sessionId": sid, "text": text + attachmentLabels(attachments)}
+	runtime.EventsEmit(a.ctx, "agent:event", ev)
+	a.runner.fanout(ev)
 	return a.runner.Send(sid, *model, text, attachments, mode)
 }
 
@@ -617,6 +679,14 @@ func (a *App) SetPermissionMode(mode string) {
 	a.mu.Lock()
 	a.mode = mode
 	a.mu.Unlock()
+	// 通知桌面前端同步权限徽标（手机端切换时电脑即时更新）
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "permission:changed", mode)
+	}
+	// 手机端实时同步权限
+	if a.runner != nil {
+		a.runner.fanout(msg.Event{"type": "permission:changed", "value": mode})
+	}
 }
 
 // GetPermissionMode 当前权限模式。
@@ -628,6 +698,16 @@ func (a *App) GetUsage() map[string]any {
 		return map[string]any{}
 	}
 	return a.runner.UseStats()
+}
+
+// GetCompactInfo 当前模型的上下文压缩预算与窗口（统计条「压缩阈值」用）。
+func (a *App) GetCompactInfo() map[string]any {
+	m := config.FindModel(a.modelKey)
+	win := 0
+	if m != nil {
+		win = m.ContextWindow
+	}
+	return map[string]any{"budget": ctxcompact.EffectiveBudget(m), "window": win}
 }
 
 // ---------------- 编辑器 + LSP ----------------
@@ -1250,7 +1330,7 @@ func (a *App) GetBalance() map[string]any {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var parsed struct {
-		IsAvailable  bool `json:"is_available"`
+		IsAvailable  bool   `json:"is_available"`
 		TotalBalance string `json:"total_balance"`
 		BalanceInfos []struct {
 			Currency     string `json:"currency"`

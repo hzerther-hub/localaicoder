@@ -35,6 +35,19 @@ export interface GitChangesInfo {
 export interface GitBranchesInfo { ok: boolean; current: string; branches: string[] }
 export interface BalanceInfo { ok: boolean; total?: string; currency?: string }
 
+// 定时任务（desktop/schedule.go；字段与后端 JSON 对应）
+export interface ScheduledTask {
+  id: string
+  name: string
+  workspace: string
+  prompt: string
+  interval_min: number
+  enabled: boolean
+  session_id: string
+  last_run: number
+  next_run: number
+}
+
 // 后台运行中的任务（侧栏运行标记 + 暂停/恢复控件用）。
 export interface RunInfo {
   sessionId: string; model: string; paused: boolean; start: number
@@ -94,6 +107,7 @@ export const api = {
   saveCacheSettings: (backend: string, llmTTL: number, toolTTL: number) => call<Record<string, any>>('SaveCacheSettings', backend, llmTTL, toolTTL),
   cacheInfo: () => call<Record<string, any>>('CacheInfo'),
   getUsage: () => call<Record<string, any>>('GetUsage'),
+  getCompactInfo: () => call<{ budget: number; window: number }>('GetCompactInfo'),
   clearCache: () => call<boolean>('ClearCache'),
   stopRun: (sessionId?: string) => call<void>('StopRun', sessionId ?? ''),
   pauseRun: (sessionId?: string) => call<boolean>('PauseRun', sessionId ?? ''),
@@ -137,6 +151,44 @@ export const api = {
   gitBranches: () => call<GitBranchesInfo>('GitBranches'),
   switchBranch: (name: string) => call<{ ok: boolean; error?: string }>('SwitchGitBranch', name),
   getBalance: () => call<BalanceInfo>('GetBalance'),
+  getProjectTrash: () => call<string[]>('GetProjectTrash'),
+  trashProject: (ws: string) => call<string[]>('TrashProject', ws),
+  restoreProject: (ws: string) => call<string[]>('RestoreProject', ws),
+  listScheduledTasks: () => call<ScheduledTask[]>('ListScheduledTasks'),
+  saveScheduledTask: (task: Partial<ScheduledTask>) => call<ScheduledTask[]>('SaveScheduledTask', task),
+  deleteScheduledTask: (id: string) => call<ScheduledTask[]>('DeleteScheduledTask', id),
+  runScheduledTaskNow: (id: string) => call<boolean>('RunScheduledTaskNow', id),
+  // 手机远程（LAN 中继）
+  mobileStart: () => call<{ ok: boolean; url?: string; qr?: string; msg?: string }>('MobileStart'),
+  mobileStop: () => call<{ ok: boolean }>('MobileStop'),
+  mobileStatus: () => call<{ running: boolean; connected: boolean; url: string; qr: string }>('MobileStatus'),
+  // Bot 渠道：企业微信推送（P1）
+  getWeComWebhook: () => call<string>('GetWeComWebhook'),
+  saveWeComWebhook: (url: string) => call<boolean>('SaveWeComWebhook', url),
+  testWeComWebhook: () => call<{ ok: boolean; msg: string }>('TestWeComWebhook'),
+  // Bot 渠道：飞书双向（P2）
+  feishuConnect: (appID: string, appSecret: string, allowlist: string) =>
+    call<{ ok: boolean; msg?: string }>('FeishuConnect', appID, appSecret, allowlist),
+  feishuDisconnect: () => call<{ ok: boolean }>('FeishuDisconnect'),
+  feishuStatus: () => call<{ running: boolean; chats?: number }>('FeishuStatus'),
+  getFeishuConfig: () => call<{ app_id: string; app_secret: string; allowlist: string }>('GetFeishuConfig'),
+  // 自建中继（跨网手机远程）
+  relayConnect: (server: string, token: string) => call<{ ok: boolean; msg?: string }>('RelayConnect', server, token),
+  relayDisconnect: () => call<{ ok: boolean }>('RelayDisconnect'),
+  relayStatus: () => call<{ running: boolean; connected: boolean; server: string; phone_url: string; qr: string; error?: string }>('RelayStatus'),
+  relayGenToken: () => call<string>('RelayGenToken'),
+  getRelayConfig: () => call<{ server_url: string; device_token: string }>('GetRelayConfig'),
+  // Bot 渠道：Lark（国际版飞书）
+  larkConnect: (appID: string, appSecret: string, allowlist: string) =>
+    call<{ ok: boolean; msg?: string }>('LarkConnect', appID, appSecret, allowlist),
+  larkDisconnect: () => call<{ ok: boolean }>('LarkDisconnect'),
+  larkStatus: () => call<{ running: boolean }>('LarkStatus'),
+  getLarkConfig: () => call<{ app_id: string; app_secret: string; allowlist: string }>('GetLarkConfig'),
+  // Bot 渠道：Telegram
+  telegramConnect: (token: string, allowlist: string) => call<{ ok: boolean; msg?: string }>('TelegramConnect', token, allowlist),
+  telegramDisconnect: () => call<{ ok: boolean }>('TelegramDisconnect'),
+  telegramStatus: () => call<{ running: boolean }>('TelegramStatus'),
+  getTelegramConfig: () => call<{ bot_token: string; allowlist: string }>('GetTelegramConfig'),
   compactHistory: () => call<{ ok: boolean; before?: number; after?: number; msg?: string }>('CompactHistory'),
   doctor: () => call<{ checks: { name: string; ok: boolean; detail: string }[] }>('Doctor'),
   acceptDraft: (p: string) => call<boolean>('AcceptDraft', p),
@@ -174,6 +226,16 @@ const mockState = {
   ],
   ws: 'D:\\localai_code',
   branch: 'master',
+  trash: <string[]>[],
+  mobile: { running: false, connected: false, url: '', qr: '' },
+  wecomWebhook: '',
+  feishu: { app_id: '', app_secret: '', allowlist: '', running: false },
+  lark: { app_id: '', app_secret: '', allowlist: '', running: false },
+  telegram: { bot_token: '', allowlist: '', running: false },
+  relay: { server_url: '', device_token: '', running: false, connected: false, phone_url: '', qr: '' },
+  tasks: <ScheduledTask[]>[
+    { id: 'demo1', name: '每日站会摘要', workspace: 'D:\\localai_code', prompt: '总结昨天以来的 git 提交，生成站会要点', interval_min: 1440, enabled: true, session_id: '', last_run: 0, next_run: Date.now() / 1000 + 3600 },
+  ],
 }
 
 const listeners: Record<string, ((d: any) => void)[]> = {}
@@ -278,7 +340,94 @@ async function mock<T>(method: string, args: any[]): Promise<T> {
     case 'GitBranches': return { ok: true, current: 'main', branches: ['main', 'dev'] } as T
     case 'SwitchBranch': return { ok: true } as T
     case 'GetBalance': return { ok: true, total: '95.82', currency: 'USD' } as T
+    case 'GetProjectTrash': return s.trash as T
+    case 'TrashProject':
+      if (args[0] && !s.trash.includes(args[0])) s.trash.push(args[0])
+      return [...s.trash] as T
+    case 'RestoreProject':
+      s.trash = s.trash.filter((w) => w !== args[0])
+      return [...s.trash] as T
+    case 'ListScheduledTasks':
+      return s.tasks as T
+    case 'SaveScheduledTask': {
+      const t = args[0] || {}
+      const cur = s.tasks.find((x) => x.id === t.id)
+      if (cur) {
+        Object.assign(cur, t, { interval_min: t.interval_min || cur.interval_min })
+      } else {
+        s.tasks.push({
+          id: Math.random().toString(36).slice(2, 10), name: t.name || '定时任务',
+          workspace: t.workspace || s.ws, prompt: t.prompt || '',
+          interval_min: t.interval_min || 60, enabled: t.enabled ?? true,
+          session_id: '', last_run: 0, next_run: Date.now() / 1000 + (t.interval_min || 60) * 60,
+        })
+      }
+      return [...s.tasks] as T
+    }
+    case 'DeleteScheduledTask':
+      s.tasks = s.tasks.filter((x) => x.id !== args[0])
+      return [...s.tasks] as T
+    case 'RunScheduledTaskNow': return true as T
+    case 'MobileStart':
+      s.mobile = { running: true, connected: false, url: 'http://192.168.1.5:51770/?t=demo', qr: '' }
+      return { ok: true, url: s.mobile.url, qr: '' } as T
+    case 'MobileStop':
+      s.mobile = { running: false, connected: false, url: '', qr: '' }
+      return { ok: true } as T
+    case 'MobileStatus':
+      return { ...s.mobile } as T
+    case 'GetWeComWebhook': return s.wecomWebhook as T
+    case 'SaveWeComWebhook':
+      s.wecomWebhook = args[0] || ''
+      return true as T
+    case 'TestWeComWebhook':
+      return (s.wecomWebhook ? { ok: true, msg: '测试消息已发送（mock）' } : { ok: false, msg: '未配置 webhook 地址' }) as T
+    case 'GetFeishuConfig':
+      return { app_id: s.feishu.app_id, app_secret: s.feishu.app_secret, allowlist: s.feishu.allowlist } as T
+    case 'FeishuConnect':
+      s.feishu = { app_id: args[0], app_secret: args[1], allowlist: args[2], running: true }
+      return { ok: true, msg: '飞书机器人已连接（长连接模式）' } as T
+    case 'FeishuDisconnect':
+      s.feishu.running = false
+      return { ok: true } as T
+    case 'FeishuStatus':
+      return { running: s.feishu.running } as T
+    case 'GetRelayConfig':
+      return { server_url: s.relay.server_url, device_token: s.relay.device_token } as T
+    case 'RelayGenToken':
+      return 'a1b2c3d4e5f6a7b8c9d0' + Math.random().toString(36).slice(2, 44) as T
+    case 'RelayConnect':
+      s.relay = { server_url: args[0], device_token: args[1], running: true, connected: true,
+        phone_url: (args[0] || '').replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://').replace(/\/$/, '') + '/s/?d=' + (args[1] || ''),
+        qr: '' }
+      return { ok: true, msg: '中继已启动（出站连接）' } as T
+    case 'RelayDisconnect':
+      s.relay.running = false
+      return { ok: true } as T
+    case 'RelayStatus':
+      return { running: s.relay.running, connected: s.relay.connected, server: s.relay.server_url, phone_url: s.relay.phone_url || '', qr: s.relay.qr || '', error: '' } as T
+    case 'GetLarkConfig':
+      return { app_id: s.lark.app_id, app_secret: s.lark.app_secret, allowlist: s.lark.allowlist } as T
+    case 'LarkConnect':
+      s.lark = { app_id: args[0], app_secret: args[1], allowlist: args[2], running: true }
+      return { ok: true, msg: 'Lark 机器人已连接（长连接模式）' } as T
+    case 'LarkDisconnect':
+      s.lark.running = false
+      return { ok: true } as T
+    case 'LarkStatus':
+      return { running: s.lark.running } as T
+    case 'GetTelegramConfig':
+      return { bot_token: s.telegram.bot_token, allowlist: s.telegram.allowlist } as T
+    case 'TelegramConnect':
+      s.telegram = { bot_token: args[0], allowlist: args[1], running: true }
+      return { ok: true, msg: 'Telegram 机器人已连接（长轮询）' } as T
+    case 'TelegramDisconnect':
+      s.telegram.running = false
+      return { ok: true } as T
+    case 'TelegramStatus':
+      return { running: s.telegram.running } as T
     case 'CompactHistory': return { ok: true, before: 42000, after: 12000 } as T
+    case 'GetCompactInfo': return { budget: 126976, window: 128000 } as T
     case 'Doctor':
       return { checks: [{ name: '配置目录', ok: true, detail: '~/.config/local-ai-studio' }, { name: '模型配置', ok: true, detail: '10 个模型' }] } as T
     default:

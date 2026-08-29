@@ -9,6 +9,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -33,7 +35,7 @@ type runState struct {
 	cancel    context.CancelFunc
 	paused    atomic.Bool
 	resume    chan struct{}
-	model     string    // 显示用模型名
+	model     string // 显示用模型名
 	startAt   time.Time
 	finished  bool
 	finalErr  string
@@ -49,7 +51,8 @@ type RunManager struct {
 	pending map[string]bool      // 进行中的 write_file 目标（tool_start 记录，结果确认）
 	approve map[string]chan bool
 	apMu    sync.Mutex
-	last    UsageSnapshot // 最近一次运行统计
+	subs    map[chan msg.Event]struct{} // 旁路订阅（手机远程 SSE 等；与 Wails 事件同源）
+	last    UsageSnapshot               // 最近一次运行统计
 }
 
 // UsageSnapshot 一次运行的用量/费用快照。
@@ -66,7 +69,39 @@ type UsageSnapshot struct {
 // NewRunManager 创建运行器。
 func NewRunManager(ctx context.Context) *RunManager {
 	return &RunManager{ctx: ctx, runs: map[string]*runState{}, history: map[string][]msg.Msg{},
-		changed: map[string]bool{}, pending: map[string]bool{}, approve: map[string]chan bool{}}
+		changed: map[string]bool{}, pending: map[string]bool{}, approve: map[string]chan bool{},
+		subs: map[chan msg.Event]struct{}{}}
+}
+
+// Subscribe 注册旁路事件订阅（手机远程 SSE 等）；用完必须 Unsubscribe。
+func (r *RunManager) Subscribe() chan msg.Event {
+	ch := make(chan msg.Event, 512)
+	r.mu.Lock()
+	r.subs[ch] = struct{}{}
+	r.mu.Unlock()
+	return ch
+}
+
+// Unsubscribe 取消订阅并关闭通道。
+func (r *RunManager) Unsubscribe(ch chan msg.Event) {
+	r.mu.Lock()
+	if _, ok := r.subs[ch]; ok {
+		delete(r.subs, ch)
+		close(ch)
+	}
+	r.mu.Unlock()
+}
+
+// fanout 向全部订阅者广播事件（积压则丢弃，绝不阻塞 agent 主循环）。
+func (r *RunManager) fanout(ev msg.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for ch := range r.subs {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
 }
 
 func randID() string {
@@ -97,6 +132,7 @@ func (r *RunManager) Send(sessionID string, model config.ModelConfig,
 	}
 
 	runtime.EventsEmit(r.ctx, "run:started", map[string]any{"sessionId": sessionID, "model": model.DisplayName})
+	r.fanout(msg.Event{"type": "run:started", "sessionId": sessionID})
 
 	go func() {
 		var notes []any
@@ -144,6 +180,7 @@ func (r *RunManager) Send(sessionID string, model config.ModelConfig,
 					}
 				}
 				runtime.EventsEmit(r.ctx, "agent:event", ev)
+				r.fanout(ev) // 手机远程等旁路订阅者（SSE 流）
 			},
 			OnApproval: func(name string, args map[string]any, summary string) bool {
 				return r.requestApproval(name, summary)
@@ -179,12 +216,26 @@ func (r *RunManager) Send(sessionID string, model config.ModelConfig,
 			title = firstUserTitle(a.Messages)
 		}
 		_ = sessions.Save(sessionID, a.Messages, title, tools.GetWorkspace(), notes)
+		// 会话内容落盘 → 通知手机端刷新会话列表
+		r.fanout(msg.Event{"type": "sessions:changed"})
 		r.mu.Lock()
 		delete(r.runs, sessionID) // 任务结束：从运行表移除
 		r.mu.Unlock()
 		runtime.EventsEmit(r.ctx, "run:finished", map[string]any{
 			"sessionId": sessionID, "error": errStr(runErr),
 		})
+		r.fanout(msg.Event{"type": "run:finished", "sessionId": sessionID})
+		// 企业微信推送（P1）：已配置 webhook 时把本轮结果摘要发到群里（异步，尽力而为）
+		if config.GetWeComWebhook() != "" {
+			go func() {
+				summary := fmt.Sprintf("**%s** · %s\n", title, model.DisplayName)
+				if runErr != nil {
+					summary += "⚠️ 任务出错：" + errStr(runErr) + "\n"
+				}
+				summary += final
+				_ = PushWecom(summary)
+			}()
+		}
 	}()
 	return nil
 }
@@ -340,6 +391,50 @@ func (r *RunManager) SetHistory(sessionID string, msgs []msg.Msg) {
 	r.mu.Lock()
 	r.history[sessionID] = msgs
 	r.mu.Unlock()
+}
+
+// SeedHistory 会话内存历史为空时从 SQLite 播种——应用重启后载入旧会话
+// 继续对话不丢上下文（桌面 LoadSession 与手机远程续聊共用）。
+func (r *RunManager) SeedHistory(sessionID string) {
+	if len(r.History(sessionID)) > 0 {
+		return
+	}
+	s := sessions.Load(sessionID)
+	if s == nil || len(s.Messages) == 0 {
+		return
+	}
+	// Session.Messages 是落盘的原始 JSON（[]any），转回线缆格式 []msg.Msg
+	msgs := make([]msg.Msg, 0, len(s.Messages))
+	for _, mm := range s.Messages {
+		if m, ok := mm.(map[string]any); ok {
+			msgs = append(msgs, m)
+		}
+	}
+	if len(msgs) > 0 {
+		r.SetHistory(sessionID, msgs)
+	}
+}
+
+// attachmentLabels 复刻前端附件气泡标注（"📎 a.png  b.ts:1-20"），
+// 供 user_message 事件在桌面/手机两端渲染出一致的文本。
+func attachmentLabels(attachments []any) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(attachments))
+	for _, at := range attachments {
+		switch v := at.(type) {
+		case string:
+			labels = append(labels, filepath.Base(v))
+		case map[string]any:
+			p := msg.S(v, "path")
+			labels = append(labels, fmt.Sprintf("%s:%v-%v", filepath.Base(p), msg.F(v, "start"), msg.F(v, "end")))
+		}
+	}
+	if len(labels) == 0 {
+		return ""
+	}
+	return "\n\n📎 " + strings.Join(labels, "  ")
 }
 
 // cloneEvent 浅拷贝事件并注入 sessionId（避免污染原 map，前端按会话分流）。

@@ -347,7 +347,7 @@ export default function Composer() {
           <button className="icon-btn" title={t('截屏（Ctrl+Shift+F）', 'Screenshot')}
             onClick={() => useStore.getState().captureAndAttach()}>📸</button>
           {running ? (
-            <button className="send-btn stop" onClick={stop}>⏹ {t('停止', 'Stop')}</button>
+            <button className="send-btn stop" onClick={() => stop()}>⏹ {t('停止', 'Stop')}</button>
           ) : (
             <button className="send-btn" disabled={!text.trim() && attachments.length === 0} onClick={doSend}>
               {t('发送', 'Send')} ↵

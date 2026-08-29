@@ -1,4 +1,5 @@
-// 会话侧栏（深色）：按项目分组；当前会话高亮圆点；会话行右键改名、按钮删除。
+// 会话侧栏（深色）：按项目分组；当前会话高亮圆点；会话行右键改名、按钮删除；
+// 项目悬停出现删除按钮（移入垃圾箱，可恢复）；底部常驻 垃圾箱/定时任务/设置 入口。
 import { useMemo } from 'react'
 import { api } from '../bridge'
 import { useStore, t } from '../store'
@@ -22,6 +23,7 @@ export default function Sidebar() {
   const workspace = useStore((s) => s.workspace)
   const sessionId = useStore((s) => s.sessionId)
   const runningSessionId = useStore((s) => s.runningSessionId)
+  const trash = useStore((s) => s.trash)
   const newSession = useStore((s) => s.newSession)
   const loadSession = useStore((s) => s.loadSession)
   const refresh = useStore((s) => s.refreshSessions)
@@ -30,6 +32,7 @@ export default function Sidebar() {
     const map = new Map<string, typeof sessions>()
     for (const s of sessions) {
       const k = s.workspace || ''
+      if (trash.includes(k)) continue // 已删除项目：隐藏（会话保留，可从垃圾箱恢复）
       if (!map.has(k)) map.set(k, [])
       map.get(k)!.push(s)
     }
@@ -42,7 +45,7 @@ export default function Sidebar() {
       return lb - la
     })
     return keys.map((k) => ({ ws: k, items: map.get(k)! }))
-  }, [sessions, workspace])
+  }, [sessions, workspace, trash])
 
   const rename = async (id: string, cur: string) => {
     const title = prompt(t('修改会话标题', 'Rename session'), cur)
@@ -57,6 +60,22 @@ export default function Sidebar() {
     await api.deleteSession(id); refresh()
   }
 
+  // trashProject 删除项目：仅移入垃圾箱（会话保留）；删的是当前项目时自动切走
+  const trashProject = async (ws: string) => {
+    if (!confirm(t(
+      `删除项目「${dirName(ws)}」？项目将从侧栏隐藏，会话保留，可在垃圾箱恢复。`,
+      `Remove project "${dirName(ws)}"? It will be hidden (sessions kept; restorable from Trash).`,
+    ))) return
+    const list = (await api.trashProject(ws)) || []
+    useStore.setState({ trash: list })
+    refresh()
+    if (ws === workspace) {
+      const next = sessions.map((s) => s.workspace)
+        .find((w) => w && w !== ws && !list.includes(w))
+      if (next) await useStore.getState().setWorkspace(next)
+    }
+  }
+
   return (
     <div className="sidebar">
       <div className="sidebar-head">
@@ -67,7 +86,7 @@ export default function Sidebar() {
         {groups.map((g) => (
           <div key={g.ws || '_'} className="proj-group">
             <div
-              className="proj-head"
+              className={`proj-head${g.ws === workspace ? ' current' : ''}`}
               title={g.ws || ''}
               onClick={async () => {
                 if (g.ws && g.ws !== workspace) await useStore.getState().setWorkspace(g.ws)
@@ -76,6 +95,11 @@ export default function Sidebar() {
               <span className="icon">{g.ws === workspace ? '📂' : '📁'}</span>
               <span className="name">{dirName(g.ws)}</span>
               <span className="count">{g.items.length}</span>
+              <button
+                className="op proj-del"
+                title={t('删除项目（移入垃圾箱）', 'Remove project (to trash)')}
+                onClick={(e) => { e.stopPropagation(); g.ws && trashProject(g.ws) }}
+              >🗑</button>
             </div>
             {g.items.map((s) => (
               <div

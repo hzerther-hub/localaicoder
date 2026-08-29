@@ -27,13 +27,23 @@ run: ## CLI 流式 REPL
 
 ## ---------- 桌面（Wails，需 CGO + WebView2） ----------
 
+# Linux 按发行版选择 webkit 标签（本机装的是 webkit2gtk-4.1 → webkit2_41）；
+# Windows/WebView2 不需要该标签。
+ifeq ($(shell uname 2>/dev/null),Linux)
+DESKTOP_TAGS  := desktop,production,webkit2_41
+DESKTOP_OUT   := bin/LocalAIStudio
+else
+DESKTOP_TAGS  := desktop,production
+DESKTOP_OUT   := bin/LocalAIStudio.exe
+endif
+
 .PHONY: frontend
 frontend: ## 构建前端产物（desktop/frontend/dist）
 	cd desktop/frontend && pnpm install && pnpm build
 
 .PHONY: build-desktop
-build-desktop: ## 编译桌面 exe（必须带 production 标签！）
-	cd desktop && $(GO) build -tags desktop,production -ldflags "-s -w" -o bin/LocalAIStudio.exe .
+build-desktop: frontend ## 编译桌面应用（必须带 production 标签！Linux 自动加 webkit2_41）
+	cd desktop && $(GO) build -tags $(DESKTOP_TAGS) -ldflags "-s -w" -o $(DESKTOP_OUT) .
 
 .PHONY: dev-desktop
 dev-desktop: ## 桌面开发模式（热重载；需 wails CLI: go install github.com/wailsapp/wails/v2/cmd/wails@latest）

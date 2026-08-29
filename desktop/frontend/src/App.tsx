@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useStore } from './store'
+import { useStore, t } from './store'
 import Toolbar from './components/Toolbar'
 import Sidebar from './components/Sidebar'
 import ChatView from './components/ChatView'
@@ -8,6 +8,10 @@ import StepBar from './components/StepBar'
 import SkillsPanel from './components/SkillsPanel'
 import ChangesPanel from './components/ChangesPanel'
 import StatsBar from './components/StatsBar'
+import TrashPanel from './components/TrashPanel'
+import SchedulePanel from './components/SchedulePanel'
+import SettingsPanel from './components/SettingsPanel'
+import MobilePanel from './components/MobilePanel'
 import EditorPanel from './components/EditorPanel'
 import ApprovalDialog from './components/ApprovalDialog'
 import ModelPanel from './components/ModelPanel'
@@ -51,9 +55,22 @@ export default function App() {
           <ChatView />
           <StepBar />
           <Composer />
-          <StatsBar />
         </div>
         {editor && <EditorPanel />}
+      </div>
+      {/* 窗口最底部通栏一行：三入口 + 状态栏 */}
+      <div className="bottom-line">
+        <div className="bottom-icons">
+          <button title={t('垃圾箱（已删除项目，可恢复）', 'Trash (removed projects, restorable)')}
+            onClick={() => useStore.getState().setShowTrashPanel(true)}>🗑</button>
+          <button title={t('定时任务', 'Scheduled tasks')}
+            onClick={() => useStore.getState().setShowSchedulePanel(true)}>🕐</button>
+          <button title={t('移动端远程控制（扫码 / Bot 渠道）', 'Mobile remote (QR / bot channels)')}
+            onClick={() => useStore.getState().setShowMobilePanel(true)}>📱</button>
+          <button title={t('设置', 'Settings')}
+            onClick={() => useStore.getState().setShowSettingsPanel(true)}>⚙</button>
+        </div>
+        <StatsBar />
       </div>
       <TerminalDrawer />
       <ApprovalDialog />
@@ -64,6 +81,10 @@ export default function App() {
       <MCPPanel />
       <DispatchPanel />
       <CachePanel />
+      <TrashPanel />
+      <SchedulePanel />
+      <SettingsPanel />
+      <MobilePanel />
       {annotateSrc && <AnnotateModal />}
       {shotSrc && (
         <ShotOverlay

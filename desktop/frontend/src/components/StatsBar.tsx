@@ -1,115 +1,141 @@
-// 统计条（置于窗口最底部）：耗时 / 输入输出思考分项 / 吞吐 / 缓存 /
-// 会话 tokens·轮次 / 上下文占用 / 费用·累计（仅定价模型）/ 余额 / 附件识图 /
-// 命中率 / 请求。字段仅在模型或提供方报告时显示。
-import { useEffect, useState } from 'react'
+// 底部单行状态栏（类 Claude Code statusline）：
+// ● 模型 · ⌂ 工作区 | ⎇ 分支 | 本次/平均命中 | 会话 tokens | 本次 tokens |
+// 吞吐 | 输出 | 缓存 | 本次/会话费用 | 轮次 | 上下文 | 压缩阈值 | 余额。
+// 无数据的字段显示 —，字段随模型或提供方报告自动填充。
 import { useStore, t } from '../store'
 
-// fmtK 大数缩写：1234 → 1.2k（统计条紧凑显示）
+// fmtK 大数缩写：1234 → 1.2k（单行紧凑显示）
 function fmtK(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 
-function fmtCost(v: number): string {
-  if (!v || v <= 0) return '$0'
-  if (v < 0.01) return `¥${(v * 7.2).toFixed(3)}`
-  return `¥${(v * 7.2).toFixed(2)}`
+// fmtComma 千分位：971859 → 971,859（会话累计 tokens）
+function fmtComma(n: number): string {
+  return n.toLocaleString('en-US')
 }
 
-// useElapsed 会话耗时（每秒走表）
-function useElapsed(): string {
-  const sessionStart = useStore((s) => s.sessionStart)
-  const [, tick] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => tick((n) => n + 1), 1000)
-    return () => clearInterval(id)
-  }, [])
-  const sec = Math.max(0, Math.floor((Date.now() - sessionStart) / 1000))
-  const h = Math.floor(sec / 3600)
-  const m = Math.floor((sec % 3600) / 60)
-  const s = sec % 60
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
+// fmtCNY USD→CNY（费率 7.2，统计条口径），四位小数对齐 statusline 风格
+function fmtCNY(usd: number): string {
+  return `¥${(usd * 7.2).toFixed(4)}`
+}
+
+// shortPath 工作区缩写：超过 3 段时保留末两级（…/build/qwen-coder）
+function shortPath(p: string): string {
+  const segs = p.split(/[\\/]/).filter(Boolean)
+  if (segs.length <= 3) return p
+  return `…/${segs.slice(-2).join('/')}`
+}
+
+function Sep() {
+  return <i className="sep">|</i>
 }
 
 export default function StatsBar() {
   const running = useStore((s) => s.running)
-  const round = useStore((s) => s.round)
-  const capturing = useStore((s) => s.capturing)
   const usage = useStore((s) => s.usage)
-  const lang = useStore((s) => s.lang)
-  const attSent = useStore((s) => s.attSent)
-  const visionSent = useStore((s) => s.visionSent)
-  const balance = useStore((s) => s.balance)
-  const sessionTokens = useStore((s) => s.sessionTokens)
-  const turnCount = useStore((s) => s.turnCount)
-  const lastThroughput = useStore((s) => s.lastThroughput)
   const models = useStore((s) => s.models)
   const currentModel = useStore((s) => s.currentModel)
-  const elapsed = useElapsed()
-  const hitRate = usage.prompt > 0 ? (usage.cached / usage.prompt) * 100 : 0
-  // 上下文占用：本轮输入 / 当前模型窗口（无窗口数据则不显示）
-  const ctxWindow = models.find((m) => m.key === currentModel)?.context_window || 0
+  const workspace = useStore((s) => s.workspace)
+  const branch = useStore((s) => s.branch)
+  const balance = useStore((s) => s.balance)
+  const sessionTokens = useStore((s) => s.sessionTokens)
+  const sessionPrompt = useStore((s) => s.sessionPrompt)
+  const sessionCached = useStore((s) => s.sessionCached)
+  const sessionCost = useStore((s) => s.sessionCost)
+  const turnCount = useStore((s) => s.turnCount)
+  const lastThroughput = useStore((s) => s.lastThroughput)
+  const compact = useStore((s) => s.compact)
+  const mi = models.find((m) => m.key === currentModel)
+  const modelName = mi?.model_id || currentModel.split('/').pop() || '—'
+
+  // 命中率：本次 = 本轮 cached/prompt；平均 = 会话累计 cached/prompt
+  const turnHit = usage.prompt > 0 ? `${((usage.cached / usage.prompt) * 100).toFixed(1)}%` : '—'
+  const avgHit = sessionPrompt > 0 ? `${((sessionCached / sessionPrompt) * 100).toFixed(2)}%` : '—'
+  // 上下文占用：本轮输入 / 当前模型窗口
+  const ctxWindow = mi?.context_window || 0
   const ctxPct = ctxWindow > 0 ? Math.min(100, (usage.prompt / ctxWindow) * 100) : 0
+  // 压缩阈值：压缩预算 / 上下文窗口
+  const compactPct = compact.window > 0 ? `${Math.min(100, (compact.budget / compact.window) * 100).toFixed(0)}%` : '—'
+  const priced = mi?.priced ?? false
 
   return (
     <div className="usage-bar">
-      {capturing && (
-        <span className="running-chip" title={t('通过系统 portal 抓取，首次可能需要授权或数秒', 'capturing via system portal')}>
-          ⏳ {t('正在截取屏幕…', 'capturing screen…')}
-        </span>
-      )}
-      {running && (
-        <span className="running-chip" title={t('任务执行中，完成前请勿关闭', 'task in progress')}>
-          <span className="running-dot" />{t('进行中', 'running')}{round > 0 ? ` · ${t('第', 'round')} ${round} ${t('轮', '')}` : ''}
-        </span>
-      )}
-      <span title={t('当前会话时长', 'session elapsed')}>{t('耗时', 'elapsed')} <b>{elapsed}</b></span>
-      <span title={t('本轮输入 tokens（含缓存命中部分）', 'prompt tokens this turn (incl. cached)')}>
-        {t('输入', 'in')} <b>{usage.prompt > 0 ? fmtK(usage.prompt) : '—'}</b>
+      <span className="model" title={`${mi?.display_name || currentModel}${running ? ` · ${t('运行中', 'running')}` : ''}`}>
+        <span className={`status-dot${running ? ' busy' : ''}`} />
+        {modelName}
       </span>
+      <i className="sep">·</i>
+      {workspace && (
+        <span title={workspace}>⌂ {shortPath(workspace)}</span>
+      )}
+      <Sep />
+      {branch && (
+        <>
+          <span title={t('当前 Git 分支', 'current git branch')}>⎇ {branch}</span>
+          <Sep />
+        </>
+      )}
+      <span title={t('本轮前缀缓存命中率（cached/prompt）', 'prefix-cache hit rate this turn')}>
+        {t('本次命中', 'turn hit')} <b>{turnHit}</b>
+      </span>
+      <Sep />
+      <span title={t('会话平均前缀缓存命中率', 'average prefix-cache hit rate this session')}>
+        {t('平均命中', 'avg hit')} <b>{avgHit}</b>
+      </span>
+      <Sep />
+      <span title={t('本次会话累计 tokens', 'total tokens this session')}>
+        {t('会话 tokens', 'session tok')} <b>{fmtComma(sessionTokens)}</b>
+      </span>
+      <Sep />
+      <span title={t('本轮 tokens（输入+输出）', 'tokens this turn (in+out)')}>
+        {t('本次 tokens', 'turn tok')} <b>{usage.total > 0 ? fmtK(usage.total) : '—'}</b>
+      </span>
+      <Sep />
+      <span title={t('上一轮输出吞吐（tokens/秒）', 'output throughput (tokens/s)')}>
+        {t('吞吐速度', 'tok/s')} <b>{lastThroughput > 0 ? `${lastThroughput}/s` : '—'}</b>
+      </span>
+      <Sep />
       <span title={t('本轮输出 tokens', 'completion tokens this turn')}>
         {t('输出', 'out')} <b>{usage.completion > 0 ? fmtK(usage.completion) : '—'}</b>
       </span>
-      {usage.reasoning > 0 && (
-        <span title={t('本轮推理思考 tokens（推理模型）', 'reasoning tokens this turn')}>
-          {t('思考', 'think')} <b>{fmtK(usage.reasoning)}</b>
-        </span>
-      )}
-      <span title={t('本轮输出吞吐（tokens/秒）', 'output throughput (tokens/s)')}>
-        {t('吞吐', 'tok/s')} <b>{lastThroughput > 0 ? `${lastThroughput}/s` : '—'}</b>
-      </span>
-      <span title={t('本轮服务端前缀缓存命中 tokens', 'prefix-cache hit tokens this turn')}>
+      <Sep />
+      <span title={t('本轮前缀缓存命中 tokens', 'prefix-cache hit tokens this turn')}>
         {t('缓存', 'cache')} <b>{usage.cached > 0 ? fmtK(usage.cached) : '—'}</b>
       </span>
-      <span title={t('本次会话累计 tokens / 轮次', 'session tokens / turns')}>
-        {t('会话', 'session')} <b>{fmtK(sessionTokens)}</b> · {turnCount} {t('轮', 'turns')}
+      <Sep />
+      <span title={t('本轮费用（按官方定价折算）', 'cost this turn (official pricing)')}>
+        {t('本次费用', 'turn cost')} <b>{priced ? fmtCNY(usage.cost) : '—'}</b>
       </span>
-      {ctxWindow > 0 && (
-        <span title={t('本轮输入占当前模型上下文窗口比例', 'prompt vs current model context window')}>
-          {t('上下文', 'ctx')} <b style={{ color: ctxPct >= 80 ? 'var(--amber)' : undefined }}>{ctxPct.toFixed(0)}%</b>
-        </span>
-      )}
-      {(models.find((m) => m.key === currentModel)?.priced ?? false) && (
-        <span title={t('按官方定价折算（缓存输入×hit价 + 其余输入×miss价 + 输出×out价）', 'Priced per official rate')}>
-          {t('费用', 'cost')} <b>{fmtCost(usage.cost)}</b> · {t('累计', 'total')} <b>{fmtCost(usage.costTotal)}</b>
-        </span>
-      )}
+      <Sep />
+      <span title={t('本次会话轮次（发送次数）', 'turns this session')}>
+        {t('当前会话', 'session')} <b>{turnCount}{t('轮', ' turns')}</b>
+      </span>
+      <Sep />
+      <span title={t('本轮输入占当前模型上下文窗口比例', 'prompt vs current model context window')}>
+        {t('上下文', 'ctx')}{' '}
+        <b style={{ color: ctxWindow > 0 && ctxPct >= 80 ? 'var(--amber)' : undefined }}>
+          {ctxWindow > 0 ? `${ctxPct.toFixed(0)}%` : '—'}
+        </b>
+      </span>
+      <Sep />
+      <span title={t('触发上下文压缩的预算占窗口比例', 'compact budget as share of context window')}>
+        {t('压缩阈值', 'compact')} <b>{compactPct}</b>
+      </span>
+      <Sep />
+      <span title={t('本次会话累计费用', 'total cost this session')}>
+        {t('会话费用', 'session cost')} <b>{priced ? fmtCNY(sessionCost) : '—'}</b>
+      </span>
       {balance.ok && balance.total && (
-        <span title={t('模型提供方账户余额（当前仅 DeepSeek）', 'Provider account balance (DeepSeek only)')}>
-          · {t('余额', 'balance')} <b style={{ color: 'var(--green)' }}>{balance.currency === 'CNY' ? '¥' : '$'}{balance.total}</b>
-        </span>
+        <>
+          <Sep />
+          <span title={t('模型提供方账户余额（当前仅 DeepSeek）', 'Provider account balance (DeepSeek only)')}>
+            {t('余额', 'balance')}{' '}
+            <b style={{ color: 'var(--green)' }}>
+              {balance.currency === 'CNY' ? '¥' : '$'}{balance.total}
+            </b>
+          </span>
+        </>
       )}
-      {attSent > 0 && (
-        <span title={t('本次会话附件 / 其中识图', 'attachments / vision in this session')}>
-          {t('附件', 'atts')} <b>{attSent}</b>{visionSent > 0 ? ` · ${t('识图', 'vision')} ${visionSent}` : ''}
-        </span>
-      )}
-      <span className="spacer" style={{ flex: 1 }} />
-      <span title={t('服务端前缀缓存命中率（cached/prompt）', 'Provider prefix-cache hit rate')}>
-        {t('命中率', 'hit')} <b style={{ color: hitRate >= 50 ? 'var(--green)' : 'var(--text-dim)' }}>{hitRate.toFixed(0)}%</b>
-      </span>
-      <span>{t('请求', 'reqs')} <b>{usage.requests}</b></span>
-      <span>{lang.toUpperCase()}</span>
     </div>
   )
 }

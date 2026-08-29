@@ -62,6 +62,7 @@ interface UIState {
   mode: string
   workspace: string
   branch: string
+  trash: string[]   // 项目垃圾箱（已删除隐藏的项目目录，可恢复）
   sessions: SessionMeta[]
   sessionId: string
   items: ChatItem[]
@@ -75,6 +76,10 @@ interface UIState {
   sessionTokens: number  // 本次会话累计 tokens
   turnCount: number      // 本次会话轮次（发送次数）
   lastThroughput: number // 上一轮输出吞吐（tokens/s；0 = 未知）
+  sessionPrompt: number  // 本次会话累计输入 tokens（平均命中率分母）
+  sessionCached: number  // 本次会话累计缓存命中 tokens（平均命中率分子）
+  sessionCost: number    // 本次会话累计费用（USD）
+  compact: { budget: number; window: number } // 当前模型压缩预算/窗口（压缩阈值显示）
   turnStart: number      // 内部：本轮开始时间戳
   round: number          // 当前任务进行中的工具轮次（agent 循环）
   usage: Usage
@@ -96,6 +101,14 @@ interface UIState {
   setShowSkillsPanel: (v: boolean) => void
   showChangesPanel: boolean
   setShowChangesPanel: (v: boolean) => void
+  showTrashPanel: boolean
+  setShowTrashPanel: (v: boolean) => void
+  showSchedulePanel: boolean
+  setShowSchedulePanel: (v: boolean) => void
+  showSettingsPanel: boolean
+  setShowSettingsPanel: (v: boolean) => void
+  showMobilePanel: boolean
+  setShowMobilePanel: (v: boolean) => void
   balance: { ok: boolean; total: string; currency: string }
   capturing: boolean // 正在截取屏幕（portal 可能需授权/数秒）
   showEditor: boolean
@@ -142,6 +155,7 @@ export const useStore = create<UIState>((set, get) => ({
   mode: 'always',
   workspace: '',
   branch: '',
+  trash: [],
   sessions: [],
   sessionId: '',
   items: [],
@@ -155,6 +169,10 @@ export const useStore = create<UIState>((set, get) => ({
   sessionTokens: 0,
   turnCount: 0,
   lastThroughput: 0,
+  sessionPrompt: 0,
+  sessionCached: 0,
+  sessionCost: 0,
+  compact: { budget: 0, window: 0 },
   turnStart: 0,
   round: 0,
   usage: { ...emptyUsage },
@@ -180,6 +198,14 @@ export const useStore = create<UIState>((set, get) => ({
   setShowSkillsPanel: (v) => set({ showSkillsPanel: v }),
   showChangesPanel: false,
   setShowChangesPanel: (v) => set({ showChangesPanel: v }),
+  showTrashPanel: false,
+  setShowTrashPanel: (v) => set({ showTrashPanel: v }),
+  showSchedulePanel: false,
+  setShowSchedulePanel: (v) => set({ showSchedulePanel: v }),
+  showSettingsPanel: false,
+  setShowSettingsPanel: (v) => set({ showSettingsPanel: v }),
+  showMobilePanel: false,
+  setShowMobilePanel: (v) => set({ showMobilePanel: v }),
   balance: { ok: false, total: '', currency: '' },
   capturing: false,
   showEditor: false,
@@ -205,6 +231,8 @@ export const useStore = create<UIState>((set, get) => ({
     get().refreshSessions()
     api.currentSession().then((id) => set({ sessionId: id }))
     api.gitBranch().then((b) => set({ branch: b || '' }))
+    api.getProjectTrash().then((list) => set({ trash: list || [] }))
+    api.getCompactInfo().then((c) => { if (c) set({ compact: c }) })
     api.getBalance().then((b) => { if (b?.ok) set({ balance: { ok: true, total: b.total || '', currency: b.currency || '' } }) })
 
     onEvent('agent:event', (e: AgentEvent) => {
@@ -296,6 +324,14 @@ export const useStore = create<UIState>((set, get) => ({
           } })
           break
         }
+        case 'user_message': {
+          // 手机端发起的消息：桌面同一会话实时补上用户气泡
+          //（桌面自己发的已在 send() 里乐观渲染，文本一致则跳过防重复）
+          const last = st.items[st.items.length - 1]
+          if (last && last.kind === 'user' && last.text === e.text) break
+          set({ items: [...st.items, { id: nextId++, kind: 'user', text: e.text, reasoning: '' }] })
+          break
+        }
         case 'context_compact':
           set({ items: [...st.items, { id: nextId++, kind: 'assistant',
             text: `_${e.before} → ${e.after} tokens_`, reasoning: '' }] })
@@ -332,11 +368,15 @@ export const useStore = create<UIState>((set, get) => ({
         return
       }
       // 整轮结束：任务步骤条消失（对齐 Python 版 _clear_todo）；
-      // 会话累计 tokens 与输出吞吐按本轮实际用量结算。
+      // 会话累计 tokens 与输出吞吐按本轮实际用量结算；
+      // 会话累计输入/缓存（平均命中率）与费用同步累计。
       const durSec = st.turnStart > 0 ? (Date.now() - st.turnStart) / 1000 : 0
       set({
         running: false, approval: null, steps: [], runningSessionId: '',
         sessionTokens: st.sessionTokens + st.usage.total,
+        sessionPrompt: st.sessionPrompt + st.usage.prompt,
+        sessionCached: st.sessionCached + st.usage.cached,
+        sessionCost: st.sessionCost + st.usage.cost,
         lastThroughput: durSec > 0.5 && st.usage.completion > 0
           ? Math.round(st.usage.completion / durSec)
           : 0,
@@ -355,8 +395,13 @@ export const useStore = create<UIState>((set, get) => ({
     })
     onEvent('approval:request', (d) =>
       set({ approval: { id: d.id, name: d.name, summary: d.summary || '' } }))
+    // 定时任务后台运行结束/任务表变化：刷新会话列表（任务会话标题入列）
+    onEvent('schedule:changed', () => { get().refreshSessions() })
+    // 权限模式变化（手机端/其它端切换）：桌面同步权限徽标
+    onEvent('permission:changed', (m) => { if (m) set({ mode: m }) })
     onEvent('model:changed', (k) => {
       api.listModels().then((models) => set({ models, currentModel: k }))
+      api.getCompactInfo().then((c) => { if (c) set({ compact: c }) })
     })
     onEvent('workspace:changed', (ws) => {
       set({ workspace: ws })
@@ -415,16 +460,17 @@ export const useStore = create<UIState>((set, get) => ({
   setModel: (k) => {
     api.setCurrentModel(k)
     set({ currentModel: k })
+    api.getCompactInfo().then((c) => { if (c) set({ compact: c }) })
   },
 
   newSession: () => {
     api.newSession().then((id) => set({ sessionId: id }))
-    set({ items: [], usage: { ...emptyUsage }, sessionStart: Date.now(), attSent: 0, visionSent: 0, steps: [], sessionTokens: 0, turnCount: 0, lastThroughput: 0 })
+    set({ items: [], usage: { ...emptyUsage }, sessionStart: Date.now(), attSent: 0, visionSent: 0, steps: [], sessionTokens: 0, turnCount: 0, lastThroughput: 0, sessionPrompt: 0, sessionCached: 0, sessionCost: 0 })
     get().refreshSessions()
   },
 
   loadSession: (id) => {
-    set({ sessionId: id, sessionStart: Date.now(), attSent: 0, visionSent: 0, steps: [], sessionTokens: 0, turnCount: 0, lastThroughput: 0 })
+    set({ sessionId: id, sessionStart: Date.now(), attSent: 0, visionSent: 0, steps: [], sessionTokens: 0, turnCount: 0, lastThroughput: 0, sessionPrompt: 0, sessionCached: 0, sessionCost: 0, usage: { ...emptyUsage } })
     api.loadSession(id).then((s) => {
       if (!s) return
       const items: ChatItem[] = []

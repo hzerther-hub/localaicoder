@@ -1,5 +1,5 @@
 // Package sessions 多会话管理：保存 / 加载 / 切换 / 删除对话
-//（对译 Python sessions.py；SQLite schema 与之完全兼容，旧 JSON 自动迁移）。
+// （对译 Python sessions.py；SQLite schema 与之完全兼容，旧 JSON 自动迁移）。
 package sessions
 
 import (
@@ -139,11 +139,12 @@ func upsert(d *sql.DB, sid, title string, messages []any,
 	}
 	payload, _ := json.Marshal(map[string]any{"messages": messages, "notes": notes})
 
-	var oldCreated, oldUpdated int64
+	// created/updated 为 REAL（float64），必须扫进 float64 再转整型（见下方 Load 注释）。
+	var oldCreatedF, oldUpdatedF float64
 	var oldWS string
 	err := d.QueryRow(
 		"SELECT created, updated, workspace FROM sessions WHERE id=?", sid).
-		Scan(&oldCreated, &oldUpdated, &oldWS)
+		Scan(&oldCreatedF, &oldUpdatedF, &oldWS)
 	if err == sql.ErrNoRows {
 		_, err := d.Exec(
 			"INSERT INTO sessions (id, title, created, updated, workspace, messages)"+
@@ -154,6 +155,8 @@ func upsert(d *sql.DB, sid, title string, messages []any,
 	if err != nil {
 		return err
 	}
+	oldUpdated := int64(oldUpdatedF)
+	_ = int64(oldCreatedF)
 	if overwriteIfNewer || *updated > oldUpdated {
 		if workspace == "" {
 			workspace = oldWS // 未传 workspace 时保留原值（目录过滤不丢）
@@ -172,13 +175,13 @@ func upsert(d *sql.DB, sid, title string, messages []any,
 
 // Session 一条会话的完整数据。
 type Session struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Created   int64    `json:"created"`
-	Updated   int64    `json:"updated"`
-	Workspace string   `json:"workspace"`
-	Messages  []any    `json:"messages"`
-	Notes     []any    `json:"notes"`
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Created   int64  `json:"created"`
+	Updated   int64  `json:"updated"`
+	Workspace string `json:"workspace"`
+	Messages  []any  `json:"messages"`
+	Notes     []any  `json:"notes"`
 }
 
 // Meta 会话列表项。

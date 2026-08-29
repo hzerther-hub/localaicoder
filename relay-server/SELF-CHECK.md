@@ -8,14 +8,14 @@
 ```bash
 cd relay-server
 python3 selftest.py <域名> <device_token>
-# 例：biancheng.mei.biz 是正确域名（.bz 是错的，别用）
-python3 selftest.py biancheng.mei.biz 6e26313990758a35a4fc28868e9dd8aa319164cb3740128f1dc36d5d9f5f3e2a
+# 例：<你的域名> 是正确域名（.bz 是错的，别用）
+python3 selftest.py <你的域名> 6e26313990758a35a4fc28868e9dd8aa319164cb3740128f1dc36d5d9f5f3e2a
 ```
 
 输出示例（全部正常时）：
 
 ```
-===== 自检: biancheng.mei.biz (token 6e2631…) =====
+===== 自检: <你的域名> (token 6e2631…) =====
 [1] DNS        : ['154.9.25.70']
 [2] HTTPS /s/  : HTTP 200  ✅
 [3] WS /s/ws   : ✅ desktop_on=always sessions=25
@@ -96,7 +96,7 @@ PY
 
 ## 3. 最容易踩的三个坑（AI 优先核查）
 
-1. **域名写错**：正确是 `biancheng.mei.biz`；`biancheng.mei.bz` 解析到多个 IP 且 443 不通，**不能用**。
+1. **域名写错**：正确是 `<你的域名>`；`<你的域名>` 解析到多个 IP 且 443 不通，**不能用**。
 2. **token 不一致**：三处必须完全一致——服务器 `device_tokens[]`、桌面面板、手机链接 `?d=`。
 3. **改了地址没重连**：桌面端自动连接只在**启动时**读一次配置；改完 `.biz` 要么重启桌面端、要么面板点「连接」。
 

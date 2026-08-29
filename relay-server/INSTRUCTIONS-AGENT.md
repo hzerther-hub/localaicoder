@@ -1,18 +1,18 @@
 # 自建中继 · 面向智能体的配置说明
 
-> 目标域名：**biancheng.mei.biz**。请**严格按本文件顺序**在服务器上执行；
+> 目标域名：**<你的域名>**。请**严格按本文件顺序**在服务器上执行；
 > 每条命令可直接复制。任何一步出错先停，勿跳过安全项。
 
 ## 0. 背景（30 秒看懂）
 
-- **客户端**：用户电脑上的 Local AI Studio（Go，出站 WS 连 `wss://biancheng.mei.biz/client?d=<token>`）
+- **客户端**：用户电脑上的 Local AI Studio（Go，出站 WS 连 `wss://<你的域名>/client?d=<token>`）
 - **服务器**：`relay-server/`（FastAPI），只按 token 路由，不解析业务
-- **手机**：浏览器打开 `https://biancheng.mei.biz/s/?d=<token>` 即得网页控制台
+- **手机**：浏览器打开 `https://<你的域名>/s/?d=<token>` 即得网页控制台
 - **一个 token 两用**：桌面连服务器的凭证 + 手机链接的 `d=`。
 
 ## 1. 前置：DNS 与防火墙
 
-1. 把 `biancheng.mei.biz` 解析到本服务器公网 IP（A 记录）。
+1. 把 `<你的域名>` 解析到本服务器公网 IP（A 记录）。
 2. 放行 80/443：
    ```bash
    ufw allow 80/tcp && ufw allow 443/tcp && ufw reload
@@ -46,14 +46,14 @@ EOF
 
 > 一个 token 两用：桌面连服务器的凭证（`/client?d=<token>`）+ 手机链接的 `d=<token>`。**三处必须完全一致**：服务器 `device_tokens[]`、桌面面板 token、手机 URL。改 token = 作废旧链接（换配置需重启）。
 
-- ⚠️ **域名别写错**：正确是 `wss://biancheng.mei.biz`（**.biz**）；`biancheng.mei.bz` 解析到多个 IP 且 443 不通，**不可用**。
+- ⚠️ 全文的 `wss://<你的域名>` / `https://<你的域名>` 均需替换为**你自己的域名**（能解析到本服务器公网 IP 的一个域名，Caddy 会自动签证书）。
 
 ## 4. Caddy 终结 TLS
 
 ```bash
 # 若未装 Caddy：apt install -y caddy   （Debian/Ubuntu）
 cat > /etc/caddy/Caddyfile <<'EOF'
-biancheng.mei.biz {
+<你的域名> {
     reverse_proxy 127.0.0.1:9000
 }
 EOF
@@ -100,10 +100,10 @@ curl -s "http://127.0.0.1:9000/s/?d=testtoken123" | grep -c "项目会话"
 ## 7. 桌面端配置（用户侧）
 
 1. 用户打开 📱 面板底部 → 🌐 自建中继（跨网）。
-2. **服务器地址** 填：`wss://biancheng.mei.biz`（填 `https://biancheng.mei.biz` 也可，桌面端自动转 `wss://`）。
+2. **服务器地址** 填：`wss://<你的域名>`（填 `https://<你的域名>` 也可，桌面端自动转 `wss://`）。
 3. 点「**生成**」得到 **64 位 token** → 写入服务器 `config.json` 的 `device_tokens[]` → `systemctl restart relay-server`。
 4. 用户点「**连接**」，状态点变绿 = `已连接`（出站 WS 直连，自动绕过本机 `HTTPS_PROXY`）。
-5. 手机打开：`https://biancheng.mei.biz/s/?d=<同token>` → 即为手机控制台（模型/推理/权限切换 + 会话 + 快捷命令）。
+5. 手机打开：`https://<你的域名>/s/?d=<同token>` → 即为手机控制台（模型/推理/权限切换 + 会话 + 快捷命令）。
 
 > 桌面端配置存于本机 `models.json` 顶层 `relay` 块（`server_url`/`device_token`），改动后**重启应用**才会重新自动连接。
 
@@ -118,7 +118,7 @@ curl -s "http://127.0.0.1:9000/s/?d=testtoken123" | grep -c "项目会话"
 
 | 现象 | 排查 |
 |---|---|
-| 桌面「连接」后状态常红 | `curl -k https://biancheng.mei.biz/s/?d=<token>` 看是否 403；token 是否在服务器白名单；Caddy 是否已 reload |
+| 桌面「连接」后状态常红 | `curl -k https://<你的域名>/s/?d=<token>` 看是否 403；token 是否在服务器白名单；Caddy 是否已 reload |
 | 手机打开 403 | 链接里 `d=<token>` 与白名单不一致 |
 | 手机能开但没反应 | 桌面端是否已「连接」且 `Running`；设备未上线时服务器会拒绝新手机 |
-| 域名连不通 | `dig biancheng.mei.biz` 是否解析到本机；80/443 是否放行 |
+| 域名连不通 | `dig <你的域名>` 是否解析到本机；80/443 是否放行 |

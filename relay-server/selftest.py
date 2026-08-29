@@ -3,7 +3,7 @@
 """relay-server 一键自检（AI/运维可直接跑）：自动检查 域名→TLS→页面→WS→桌面是否在线。
 
 用法：python3 selftest.py <域名> <device_token> [域名2 …]
-例：  python3 selftest.py biancheng.mei.biz 6e2631…2a
+例：  python3 selftest.py <你的域名> 6e2631…2a
 说明：域名可给多个（如 .biz 和 .bz），脚本逐一探测并给出判定。
 """
 import socket

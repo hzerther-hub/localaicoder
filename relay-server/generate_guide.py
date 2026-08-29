@@ -3,12 +3,12 @@
 """生成中继服务器配置说明（面向智能体 / AGENT 的部署手册）。
 
 用法：python3 generate_guide.py [域名]
-默认域名 biancheng.mei.bz。产出文件：INSTRUCTIONS-AGENT.md
+默认域名 <你的域名>。产出文件：INSTRUCTIONS-AGENT.md
 """
 import os
 import sys
 
-DOMAIN = sys.argv[1] if len(sys.argv) > 1 else "biancheng.mei.bz"
+DOMAIN = sys.argv[1] if len(sys.argv) > 1 else "<你的域名>"
 
 GUIDE = f"""# 自建中继 · 面向智能体的配置说明
 
@@ -58,7 +58,7 @@ EOF
 
 > 一个 token 两用：桌面连服务器的凭证（`/client?d=<token>`）+ 手机链接的 `d=<token>`。**三处必须完全一致**：服务器 `device_tokens[]`、桌面面板 token、手机 URL。改 token = 作废旧链接（换配置需重启）。
 
-- ⚠️ **域名别写错**：正确是 `wss://biancheng.mei.biz`（**.biz**）；`biancheng.mei.bz` 解析到多个 IP 且 443 不通，**不可用**。
+- ⚠️ 全文的 `wss://<你的域名>` / `https://<你的域名>` 均需替换为**你自己的域名**（能解析到本服务器公网 IP 的一个域名，Caddy 会自动签证书）。
 
 ## 4. Caddy 终结 TLS
 

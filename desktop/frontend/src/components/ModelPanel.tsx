@@ -69,6 +69,9 @@ export default function ModelPanel() {
     setTimeout(() => setTip(''), 1500)
   }
 
+  // 定价编辑状态（$/百万：缓存命中输入/未命中输入/输出）
+  const [priceEdit, setPriceEdit] = useState<{ key: string; hit: string; miss: string; out: string } | null>(null)
+
   const reload = () => {
     api.listProviders().then((ps) => {
       setProviders(ps || [])
@@ -85,6 +88,19 @@ export default function ModelPanel() {
   if (!show) return null
 
   const cur = providers.find((p) => p.id === sel)
+  // DeepSeek 端点预填官方现价（$/百万：hit=缓存命中输入 miss=未命中输入 out=输出）
+  const isDeepseek = (cur?.base_url || '').includes('deepseek.com')
+  const OFFICIAL_DS = { hit: '0.27', miss: '1.1', out: '4.4' }
+  const savePrice = async (m: any) => {
+    if (!priceEdit) return
+    const num = (s: string) => { const v = parseFloat(s); return Number.isFinite(v) && v > 0 ? v : 0 }
+    await api.setModelPricing(m.key, num(priceEdit.hit), num(priceEdit.miss), num(priceEdit.out))
+    setPriceEdit(null)
+    reload()
+    refresh()
+    setTip(t('定价已保存，统计条将显示费用', 'Pricing saved'))
+    setTimeout(() => setTip(''), 1800)
+  }
 
   const startEdit = (p: ProviderView) => {
     setDraft({ ...p })
@@ -199,8 +215,8 @@ export default function ModelPanel() {
                     const local = locals.find((l) => l.key === m.key)
                     const dot = local ? STATE_DOT[local.state || 'stopped'] : null
                     return (
+                      <div key={m.key}>
                       <div
-                        key={m.key}
                         className={`mm-row${m.key === currentModel ? ' active' : ''}`}
                         onClick={() => setModel(m.key)}
                       >
@@ -229,6 +245,16 @@ export default function ModelPanel() {
                             await api.localModelAction(m.key, local.state === 'stopped' ? 'start' : 'stop')
                           }}>{local.state === 'stopped' ? '▶' : '■'}</button>
                         )}
+                        <button className="mm-mini priced" title={t('定价（$/百万），配置后统计条显示费用', 'Pricing, enables cost in stats')}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setPriceEdit(priceEdit?.key === m.key ? null : {
+                              key: m.key,
+                              hit: String(m.price_in_hit_per_m || (isDeepseek ? OFFICIAL_DS.hit : '')),
+                              miss: String(m.price_in_miss_per_m || (isDeepseek ? OFFICIAL_DS.miss : '')),
+                              out: String(m.price_out_per_m || (isDeepseek ? OFFICIAL_DS.out : '')),
+                            })
+                          }}>{m.priced ? '💰' : '🏷'}</button>
                         <button className="mm-mini" onClick={(e) => { e.stopPropagation(); setModel(m.key) }}>◉</button>
                         <button
                           className="mm-mini del"
@@ -240,6 +266,25 @@ export default function ModelPanel() {
                             }
                           }}
                         >🗑</button>
+                      </div>
+                      {priceEdit && priceEdit.key === m.key && (
+                        <div className="mm-price-edit" onClick={(e) => e.stopPropagation()}>
+                          <span className="lbl">{t('定价 $/百万', 'Pricing $/M')}</span>
+                          <input value={priceEdit.hit} placeholder={`hit ${isDeepseek ? OFFICIAL_DS.hit : '0.27'}`}
+                            onChange={(e) => setPriceEdit({ ...priceEdit, hit: e.target.value })} />
+                          <input value={priceEdit.miss} placeholder={`miss ${isDeepseek ? OFFICIAL_DS.miss : '1.1'}`}
+                            onChange={(e) => setPriceEdit({ ...priceEdit, miss: e.target.value })} />
+                          <input value={priceEdit.out} placeholder={`out ${isDeepseek ? OFFICIAL_DS.out : '4.4'}`}
+                            onChange={(e) => setPriceEdit({ ...priceEdit, out: e.target.value })} />
+                          {isDeepseek && (
+                            <button className="btn" title={t('填入 DeepSeek 官方现价', 'Fill official DeepSeek price')}
+                              onClick={() => setPriceEdit({ ...priceEdit, hit: OFFICIAL_DS.hit, miss: OFFICIAL_DS.miss, out: OFFICIAL_DS.out })}>
+                              {t('官方价', 'official')}
+                            </button>
+                          )}
+                          <button className="btn primary" onClick={() => void savePrice(m)}>{t('保存', 'Save')}</button>
+                        </div>
+                      )}
                       </div>
                     )
                   })}

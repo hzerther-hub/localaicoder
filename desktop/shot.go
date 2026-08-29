@@ -21,15 +21,20 @@ import (
 
 // CaptureScreen 捕获全部显示器（虚拟屏幕联合区域），保存 PNG 返回路径。
 // 平台分流（对齐 Tk screenshot.py）：
-//   - Linux：外部工具链优先（gnome-screenshot/scrot/maim/import/grim，Wayland 走 grim）；
+//   - Linux：Wayland 走 XDG Desktop Portal（真实画面），外部工具链后备；
+//     全部失败时返回空（Wayland 下库内 X11 捕获必然黑屏，宁缺勿假）；
 //   - Windows/macOS：kbinani/screenshot 库内捕获（Win32 GDI / macOS 抓屏）。
 func (a *App) CaptureScreen() string {
 	p := shotPath()
 	if runtime.GOOS == "linux" {
-		if captureLinux(p) {
+		ok, wayland := captureLinux(p)
+		if ok {
 			return p
 		}
-		// 外部工具都不可用 → 退回库内 X11 捕获
+		if wayland {
+			return "" // 黑屏假图比失败更糟：直接告知失败
+		}
+		// X11 外部工具都不可用 → 退回库内 X11 捕获
 	}
 	n := screenshot.NumActiveDisplays()
 	if n <= 0 {

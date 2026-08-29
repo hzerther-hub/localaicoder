@@ -384,6 +384,13 @@ export default function EditorPanel() {
             key={tab.path}
             className={`editor-tab${tab.path === active ? ' active' : ''}`}
             onClick={() => setActive(tab.path)}
+            // 标签页可拖入聊天作为附件（与文件树行同一数据类型）
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData('text/localai-path', tab.path)
+              e.dataTransfer.effectAllowed = 'copy'
+            }}
+            title={`${tab.path} · ${t('可拖拽到聊天作为附件', 'drag to chat to attach')}`}
           >
             {tab.path.split('/').pop()}
             {tab.content !== tab.saved && <span className="dirty"> ●</span>}

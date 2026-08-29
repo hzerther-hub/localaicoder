@@ -14,7 +14,8 @@ export default function KBPanel() {
 
   useEffect(() => {
     if (!show) return
-    api.getKBConfig().then(setCfg)
+    // 兜底：后端 roots 可能为 null（未配置过目录时），统一归一为空数组避免渲染崩溃。
+    api.getKBConfig().then((c) => setCfg({ ...c, roots: c.roots || [] }))
     api.kbStats().then(setStats)
     onEvent('kb:progress', (d) => setProgress({ done: d.done, total: d.total }))
     onEvent('kb:done', (d) => {

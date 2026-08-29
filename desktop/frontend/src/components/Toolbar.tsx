@@ -87,6 +87,10 @@ export default function Toolbar() {
       {features.rag !== false && (
         <button className="tb-btn" onClick={() => useStore.getState().setShowKBPanel(true)}>📚 {t('知识库', 'KB')}</button>
       )}
+      {features.skills !== false && (
+        <button className="tb-btn" onClick={() => useStore.getState().setShowSkillsPanel(true)} title={t('技能：经验沉淀 + 会话蒸馏', 'Skills: experience + distillation')}>🎓 {t('技能', 'Skills')}</button>
+      )}
+      <button className="tb-btn" onClick={() => useStore.getState().setShowChangesPanel(true)} title={t('Git 改动：会话变更/未提交/历史/分支', 'Git changes')}>🔀 {t('改动', 'Changes')}</button>
       <button className="tb-btn" onClick={() => useStore.getState().setShowMCPPanel(true)}>🔌 MCP</button>
       <button className="tb-btn" onClick={() => useStore.getState().setShowDispatchPanel(true)} title={t('派发', 'Dispatch')}>⚡ {t('派发', 'Dispatch')}</button>
       <button className="tb-btn" onClick={() => useStore.getState().setShowCachePanel(true)} title={t('缓存', 'Cache')}>🗄</button>

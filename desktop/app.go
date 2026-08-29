@@ -4,7 +4,11 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +24,7 @@ import (
 	"localai/internal/codeindex"
 	"localai/internal/codera"
 	"localai/internal/config"
+	"localai/internal/ctxcompact"
 	"localai/internal/llm"
 	"localai/internal/localmodels"
 	"localai/internal/lsp"
@@ -27,6 +32,7 @@ import (
 	"localai/internal/mcp"
 	"localai/internal/products"
 	"localai/internal/sessions"
+	"localai/internal/skills"
 	"localai/internal/tools"
 )
 
@@ -63,6 +69,20 @@ func (a *App) startup(ctx context.Context) {
 			a.modelKey = models[0].Key
 		}
 	}
+	a.updateWindowTitle()
+}
+
+// updateWindowTitle 窗口标题同步"产品名 · 模型名"（对齐 Python 版 _title_with_model：
+// 切模型时窗口标题跟随刷新）。
+func (a *App) updateWindowTitle() {
+	if a.ctx == nil {
+		return
+	}
+	title := products.Active().Title
+	if m := config.FindModel(a.modelKey); m != nil {
+		title += " · " + m.DisplayName
+	}
+	runtime.WindowSetTitle(a.ctx, title)
 }
 
 func (a *App) domReady(ctx context.Context) {
@@ -77,7 +97,7 @@ func (a *App) domReady(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {
 	if a.runner != nil {
-		a.runner.Stop()
+		a.runner.StopAll()
 	}
 	mcp.ResetManager()
 	lsp.CloseAllEditors()
@@ -175,6 +195,10 @@ type ModelInfo struct {
 	IsDefault        bool     `json:"is_default"`
 	IsCurrent        bool     `json:"is_current"`
 	Local            bool     `json:"local"`
+	Priced           bool     `json:"priced"` // 配置了官方定价（统计条费用显示开关）
+	PriceHit         float64  `json:"price_in_hit_per_m"`
+	PriceMiss        float64  `json:"price_in_miss_per_m"`
+	PriceOut         float64  `json:"price_out_per_m"`
 }
 
 func toModelInfo(m config.ModelConfig, def, cur string) ModelInfo {
@@ -185,7 +209,9 @@ func toModelInfo(m config.ModelConfig, def, cur string) ModelInfo {
 		ReasoningEffort: m.ReasoningEffort, ReasoningChoices: m.ReasoningChoices,
 		ContextWindow: m.ContextWindow,
 		IsDefault:     m.Key == def, IsCurrent: m.Key == cur,
-		Local: strings.Contains(m.BaseURL, "127.0.0.1") || strings.Contains(m.BaseURL, "localhost"),
+		Local:     strings.Contains(m.BaseURL, "127.0.0.1") || strings.Contains(m.BaseURL, "localhost"),
+		Priced:    m.PriceInHitPerM > 0 || m.PriceInMissPerM > 0 || m.PriceOutPerM > 0,
+		PriceHit:  m.PriceInHitPerM, PriceMiss: m.PriceInMissPerM, PriceOut: m.PriceOutPerM,
 	}
 }
 
@@ -368,6 +394,14 @@ func orStr(s, def string) string {
 	return def
 }
 
+// SetModelPricing 设置模型官方定价（$/百万：缓存命中输入/未命中输入/输出；
+// 传 0 清除该项）。保存后统计条「费用」按此折算。
+func (a *App) SetModelPricing(key string, hit, miss, out float64) map[string]any {
+	config.SetModelPricing(key, &hit, &miss, &out)
+	runtime.EventsEmit(a.ctx, "model:changed", key)
+	return map[string]any{"ok": true}
+}
+
 // SetModelCapability 设置某个模型的单项能力（vision 开关 / reasoning 开关 / reasoning_effort）。
 // 仅更新指定字段，其余保留。返回更新后的模型 key（改 model_id 场景用）。
 func (a *App) SetModelCapability(key string, vision, reasoning *bool, reasoningEffort *string) map[string]any {
@@ -393,12 +427,14 @@ func (a *App) SetCurrentModel(key string) {
 	a.mu.Unlock()
 	config.SetDefaultModel(key)
 	runtime.EventsEmit(a.ctx, "model:changed", key)
+	a.updateWindowTitle()
 }
 
 // SetReasoningEffort 为当前模型保存推理等级。
 func (a *App) SetReasoningEffort(key, effort string) {
 	config.UpdateModel(key, "", "", "", "", nil, nil, &effort)
 	runtime.EventsEmit(a.ctx, "model:changed", key)
+	a.updateWindowTitle()
 }
 
 // FetchEndpointModels 探测端点 /models 列表（添加模型时自动填充 ID）。
@@ -449,19 +485,41 @@ type LoadedSession struct {
 // NewSession 新建会话。
 func (a *App) NewSession() string {
 	ws := tools.GetWorkspace()
+	tools.ResetTodos() // 新会话：清空任务步骤清单（完成纪律状态）
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	// 复用该项目已有的空「新会话」（标题=新会话 且无消息），保证一个项目最多一个空会话
-	for _, m := range sessions.ListSessions(100, ws, "新会话") {
-		if s := sessions.Load(m.ID); s != nil && len(s.Messages) == 0 {
-			a.sessionID = m.ID
-			return m.ID
+	// 复用本项目「空的会话」——不限标题（兼容历史遗留的重名/纯附件会话），
+	// 保证一个项目最多一个空会话；多余的空会话直接清理。
+	var keep string
+	keepUpdated := int64(-1)
+	var stale []string
+	for _, m := range sessions.ListSessions(200, ws, "") {
+		s := sessions.Load(m.ID)
+		if s == nil || len(s.Messages) > 0 {
+			continue
+		}
+		switch {
+		case keep == "" || m.Updated > keepUpdated:
+			if keep != "" {
+				stale = append(stale, keep)
+			}
+			keep, keepUpdated = m.ID, m.Updated
+		default:
+			stale = append(stale, m.ID)
 		}
 	}
+	for _, id := range stale {
+		_ = sessions.Delete(id)
+	}
+	if keep != "" {
+		_ = sessions.Save(keep, []msg.Msg{}, "新会话", ws, nil) // 标题归一
+		a.sessionID = keep
+		return keep
+	}
+	// 懒创建：新会话只登记 ID、不立即落盘——切换项目/分组时不会再到处
+	// 留下空「新会话」；首次消息完成后由 runner.Save 真正入库。
 	id := sessions.NewID()
 	a.sessionID = id
-	// 立即落盘一条空会话（归属当前项目），侧栏按项目分组即可显示
-	_ = sessions.Save(id, []msg.Msg{}, "新会话", ws, nil)
 	return id
 }
 
@@ -491,7 +549,14 @@ func (a *App) LoadSession(id string) *LoadedSession {
 func (a *App) DeleteSession(id string) bool { return sessions.Delete(id) }
 
 // RenameSession 改名。
-func (a *App) RenameSession(id, title string) bool { return sessions.Rename(id, title) }
+// RenameSession 重命名会话；「新会话」为系统保留名（空会话复用依赖），禁止使用。
+func (a *App) RenameSession(id, title string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" || title == "新会话" {
+		return false
+	}
+	return sessions.Rename(id, title)
+}
 
 // CurrentSession 当前会话 ID。
 func (a *App) CurrentSession() string { return a.sessionID }
@@ -511,8 +576,38 @@ func (a *App) SendMessage(text string, attachments []any) error {
 	return a.runner.Send(sid, *model, text, attachments, mode)
 }
 
-// StopRun 停止当前运行。
-func (a *App) StopRun() { a.runner.Stop() }
+// StopRun 停止某会话运行（默认当前会话）。
+func (a *App) StopRun(sessionID string) {
+	if sessionID == "" {
+		a.mu.Lock()
+		sessionID = a.sessionID
+		a.mu.Unlock()
+	}
+	a.runner.Stop(sessionID)
+}
+
+// PauseRun 暂停某会话运行。
+func (a *App) PauseRun(sessionID string) bool {
+	if sessionID == "" {
+		a.mu.Lock()
+		sessionID = a.sessionID
+		a.mu.Unlock()
+	}
+	return a.runner.Pause(sessionID)
+}
+
+// ResumeRun 恢复某会话运行。
+func (a *App) ResumeRun(sessionID string) bool {
+	if sessionID == "" {
+		a.mu.Lock()
+		sessionID = a.sessionID
+		a.mu.Unlock()
+	}
+	return a.runner.Resume(sessionID)
+}
+
+// ListRuns 当前进行中/暂停的任务（后台运行标记用）。
+func (a *App) ListRuns() []map[string]any { return a.runner.ListRuns() }
 
 // RespondApproval 应答审批请求。
 func (a *App) RespondApproval(id string, allow bool) { a.runner.RespondApproval(id, allow) }
@@ -732,10 +827,15 @@ type KBConfig struct {
 
 // GetKBConfig 读知识库配置。
 func (a *App) GetKBConfig() KBConfig {
+	// 空目录列表必须序列化为 [] 而非 null（nil 切片），否则前端 roots.map 直接抛错导致弹窗崩溃。
+	roots := config.GetKBRoots()
+	if roots == nil {
+		roots = []string{}
+	}
 	return KBConfig{
 		Enabled: config.GetKBEnabled(), Inject: config.GetKBInject(),
 		Auto: config.GetKBAuto(), TopK: config.GetKBTopK(),
-		EmbedKey: config.GetKBEmbedding(), Roots: config.GetKBRoots(),
+		EmbedKey: config.GetKBEmbedding(), Roots: roots,
 	}
 }
 
@@ -801,6 +901,549 @@ func (a *App) RebuildIndex() map[string]any {
 		"seconds": s.Seconds,
 	}
 }
+
+// ---------------- 技能系统（注入 + 蒸馏草稿确认，对齐 Python 版 ui_panel_skills） ----------------
+
+// SkillInfo 前端技能条目。
+type SkillInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	When        string `json:"when"`
+	Body        string `json:"body"`
+	Scope       string `json:"scope"` // user / project / draft
+	Path        string `json:"path"`
+}
+
+func skillInfo(sk skills.Skill, scope string) SkillInfo {
+	return SkillInfo{sk.Name, sk.Description, sk.When, sk.Body, scope, sk.Path}
+}
+
+// ListSkills 已生效技能（用户级 + 项目级 + 外部源，同名项目级覆盖用户级）。
+func (a *App) ListSkills() []SkillInfo {
+	ws := tools.GetWorkspace()
+	all := skills.LoadAll(ws)
+	out := make([]SkillInfo, 0, len(all))
+	for _, sk := range all {
+		scope := "user"
+		if pd := skills.ProjectDir(ws); pd != "" && strings.HasPrefix(sk.Path, pd) {
+			scope = "project"
+		} else {
+			// 外部技能源（Claude Code / OpenCode 目录约定）
+			for _, src := range skills.ExternalDirs(ws) {
+				if strings.HasPrefix(sk.Path, src[1]) {
+					scope = src[0]
+					break
+				}
+			}
+		}
+		out = append(out, skillInfo(sk, scope))
+	}
+	return out
+}
+
+// ListSkillDrafts 蒸馏草稿列表（待人工确认）。
+func (a *App) ListSkillDrafts() []SkillInfo {
+	drafts := skills.ListDrafts()
+	out := make([]SkillInfo, 0, len(drafts))
+	for _, sk := range drafts {
+		out = append(out, skillInfo(sk, "draft"))
+	}
+	return out
+}
+
+// LoadSkillText 载入技能/草稿 Markdown 全文（前端可编辑）。
+func (a *App) LoadSkillText(path string) string {
+	if !pathInSkillsDirs(path) {
+		return ""
+	}
+	sk, err := skills.LoadFile(path)
+	if err != nil {
+		return ""
+	}
+	return sk.Render()
+}
+
+// SaveSkillDraft 保存草稿编辑内容（仅限草稿目录内文件）。
+func (a *App) SaveSkillDraft(path, content string) bool {
+	if !pathInDir(skills.DraftsDir(), path) {
+		return false
+	}
+	if _, err := skills.LoadFile(path); err != nil {
+		return false // 只允许覆写已存在的合法草稿
+	}
+	return os.WriteFile(path, []byte(content), 0o644) == nil
+}
+
+// SaveSkillText 保存正式技能（用户级/项目级）的编辑内容；仅限已存在的
+// 技能文件，且新内容必须仍是合法技能格式（frontmatter 完整），防手误破坏注入。
+func (a *App) SaveSkillText(path, content string) bool {
+	if !pathInSkillsDirs(path) || pathInDir(skills.DraftsDir(), path) {
+		return false
+	}
+	if _, err := skills.LoadFile(path); err != nil {
+		return false
+	}
+	if _, err := skills.ParseText(content); err != nil {
+		return false
+	}
+	return os.WriteFile(path, []byte(content), 0o644) == nil
+}
+
+// AcceptDraft 草稿转正：进用户级技能库并删除草稿，立即参与注入。
+func (a *App) AcceptDraft(path string) bool {
+	if !pathInDir(skills.DraftsDir(), path) {
+		return false
+	}
+	sk, err := skills.LoadFile(path)
+	if err != nil {
+		return false
+	}
+	if _, err := skills.Save(sk, skills.ScopeUser, tools.GetWorkspace()); err != nil {
+		return false
+	}
+	return skills.Remove(path) == nil
+}
+
+// DiscardDraft 丢弃草稿。
+func (a *App) DiscardDraft(path string) bool {
+	if !pathInDir(skills.DraftsDir(), path) {
+		return false
+	}
+	return skills.Remove(path) == nil
+}
+
+// DeleteSkill 删除正式技能（用户级/项目级）。
+func (a *App) DeleteSkill(path string) bool {
+	if !pathInDir(skills.UserDir(), path) && !pathInDir(skills.ProjectDir(tools.GetWorkspace()), path) {
+		return false
+	}
+	return skills.Remove(path) == nil
+}
+
+// GetSkillsSettings 技能设置（开关 + 蒸馏模型 key）。
+func (a *App) GetSkillsSettings() map[string]any {
+	return map[string]any{
+		"enabled":       config.GetSkillsEnabled(),
+		"distill_model": config.GetSkillsDistillModel(),
+	}
+}
+
+// SetSkillsSettings 写技能设置。
+func (a *App) SetSkillsSettings(enabled bool, distillModel string) {
+	config.SetSkillsEnabled(enabled)
+	config.SetSkillsDistillModel(distillModel)
+}
+
+// InstallSkill 从远程安装技能到用户级技能库（对齐其它平台技能生态）：
+//   - https://.../*.md：直接下载安装单个技能；
+//   - 其余 URL 视为 git 仓库，浅克隆后扫描 skills/<name>/SKILL.md 批量安装
+//     （Claude Code / OpenCode 目录约定），同名跳过。
+//
+// 返回 {installed: [名...], skipped: n, error: ""}。
+func (a *App) InstallSkill(rawURL string) map[string]any {
+	u := strings.TrimSpace(rawURL)
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return map[string]any{"error": "仅支持 http(s) URL"}
+	}
+	path := strings.Split(u, "?")[0]
+	if strings.HasSuffix(strings.ToLower(path), ".md") {
+		name, err := skills.InstallFromMarkdownURL(u)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		return map[string]any{"installed": []string{name}}
+	}
+	tmp, err := os.MkdirTemp("", "las-skill-")
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	defer os.RemoveAll(tmp)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--quiet", u, tmp)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return map[string]any{"error": "克隆失败（需要已安装 git）: " + strings.TrimSpace(string(out))}
+	}
+	installed, skipped, err := skills.InstallFromDir(tmp)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	return map[string]any{"installed": installed, "skipped": skipped}
+}
+
+// pathInDir 判断 path 是否位于 dir 之下（防越权路径写删）。
+func pathInDir(dir, path string) bool {
+	if dir == "" || path == "" {
+		return false
+	}
+	absDir, err1 := filepath.Abs(dir)
+	absPath, err2 := filepath.Abs(path)
+	return err1 == nil && err2 == nil && strings.HasPrefix(absPath, absDir+string(os.PathSeparator))
+}
+
+// pathInSkillsDirs 是否在任一技能目录内。
+func pathInSkillsDirs(path string) bool {
+	return pathInDir(skills.UserDir(), path) ||
+		pathInDir(skills.DraftsDir(), path) ||
+		pathInDir(skills.ProjectDir(tools.GetWorkspace()), path)
+}
+
+// ---------------- Git 改动 / 分支 ----------------
+
+// GitChanges 工作区改动总览：本会话 AI 变更 + 未提交改动 + 最近提交。
+// 返回 {is_git, branch, session:[path], changes:[{path,status,dir}], history:[{hash,subject}]}。
+func (a *App) GitChanges() map[string]any {
+	ws := tools.GetWorkspace()
+	out := map[string]any{
+		"is_git": false, "branch": "", "session": a.runner.ChangedFiles(),
+		"changes": []any{}, "history": []any{},
+	}
+	if ws == "" {
+		return out
+	}
+	if err := exec.Command("git", "-C", ws, "rev-parse", "--is-inside-work-tree").Run(); err != nil {
+		return out // 非 git 仓库
+	}
+	out["is_git"] = true
+	if b, err := exec.Command("git", "-C", ws, "branch", "--show-current").Output(); err == nil {
+		out["branch"] = strings.TrimSpace(string(b))
+	}
+	if b, err := exec.Command("git", "-C", ws, "status", "--porcelain").Output(); err == nil {
+		changes := []map[string]string{}
+		for _, line := range strings.Split(string(b), "\n") {
+			if len(line) < 4 {
+				continue
+			}
+			code, path := strings.TrimSpace(line[:2]), strings.TrimSpace(line[3:])
+			if path == "" {
+				continue
+			}
+			changes = append(changes, map[string]string{
+				"path": path, "status": gitStatusText(code), "dir": filepath.Dir(path),
+			})
+		}
+		out["changes"] = changes
+	}
+	if b, err := exec.Command("git", "-C", ws, "log", "--oneline", "-10").Output(); err == nil {
+		history := []map[string]string{}
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			parts := strings.SplitN(line, " ", 2)
+			if len(parts) == 2 {
+				history = append(history, map[string]string{"hash": parts[0], "subject": parts[1]})
+			}
+		}
+		out["history"] = history
+	}
+	return out
+}
+
+// GitBranches 列出本地分支与当前分支。
+func (a *App) GitBranches() map[string]any {
+	ws := tools.GetWorkspace()
+	out := map[string]any{"ok": false, "current": "", "branches": []string{}}
+	if ws == "" {
+		return out
+	}
+	b, err := exec.Command("git", "-C", ws, "branch", "--format=%(refname:short)").Output()
+	if err != nil {
+		return out
+	}
+	cur := ""
+	if cb, err := exec.Command("git", "-C", ws, "branch", "--show-current").Output(); err == nil {
+		cur = strings.TrimSpace(string(cb))
+	}
+	branches := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return map[string]any{"ok": true, "current": cur, "branches": branches}
+}
+
+// SwitchGitBranch 切换本地分支；工作区有未提交改动导致冲突时返回失败信息。
+func (a *App) SwitchGitBranch(name string) map[string]any {
+	ws := tools.GetWorkspace()
+	name = strings.TrimSpace(name)
+	if ws == "" || name == "" || strings.ContainsAny(name, " ;&|$\n") {
+		return map[string]any{"ok": false, "error": "分支名非法"}
+	}
+	out, err := exec.Command("git", "-C", ws, "checkout", name).CombinedOutput()
+	if err != nil {
+		return map[string]any{"ok": false, "error": strings.TrimSpace(string(out))}
+	}
+	runtime.EventsEmit(a.ctx, "git:branch", name)
+	return map[string]any{"ok": true}
+}
+
+// gitStatusText porcelain 状态码 → 中文。
+func gitStatusText(code string) string {
+	switch {
+	case code == "??":
+		return "未跟踪"
+	case strings.Contains(code, "M"):
+		return "修改"
+	case strings.Contains(code, "A"):
+		return "新增"
+	case strings.Contains(code, "D"):
+		return "删除"
+	case strings.Contains(code, "R"):
+		return "重命名"
+	}
+	return code
+}
+
+// ---------------- 账户余额 ----------------
+
+var (
+	balMu       sync.Mutex
+	balCache    map[string]any
+	balAt       time.Time
+	balFetching bool
+)
+
+// GetBalance 查询当前模型提供方的账户余额。当前仅 DeepSeek 端点支持
+// /user/balance；结果缓存 60s。非 DeepSeek 模型返回 {ok:false}（前端隐藏）。
+func (a *App) GetBalance() map[string]any {
+	a.mu.Lock()
+	mkey := a.modelKey
+	a.mu.Unlock()
+	mc := config.FindModel(mkey)
+	if mc == nil || !strings.Contains(mc.BaseURL, "deepseek.com") {
+		return map[string]any{"ok": false}
+	}
+	balMu.Lock()
+	if balFetching {
+		balMu.Unlock()
+		return map[string]any{"ok": false} // 已有请求在途，避免重复打接口
+	}
+	if balCache != nil && time.Since(balAt) < time.Minute {
+		cached := balCache
+		balMu.Unlock()
+		return cached
+	}
+	balFetching = true
+	balMu.Unlock()
+	defer func() {
+		balMu.Lock()
+		balFetching = false
+		balMu.Unlock()
+	}()
+
+	key := mc.APIKey
+	if key == "" && len(mc.APIKeys) > 0 {
+		key = mc.APIKeys[0]
+	}
+	if key == "" || key == "local-noauth" {
+		return map[string]any{"ok": false}
+	}
+	req, err := http.NewRequest("GET", strings.TrimSuffix(mc.BaseURL, "/")+"/user/balance", nil)
+	if err != nil {
+		return map[string]any{"ok": false}
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return map[string]any{"ok": false}
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var parsed struct {
+		IsAvailable  bool `json:"is_available"`
+		TotalBalance string `json:"total_balance"`
+		BalanceInfos []struct {
+			Currency     string `json:"currency"`
+			TotalBalance string `json:"total_balance"`
+		} `json:"balanceInfos"`
+	}
+	if json.Unmarshal(body, &parsed) != nil || parsed.TotalBalance == "" {
+		return map[string]any{"ok": false}
+	}
+	currency := "CNY"
+	if len(parsed.BalanceInfos) > 0 && parsed.BalanceInfos[0].Currency != "" {
+		currency = parsed.BalanceInfos[0].Currency
+	}
+	out := map[string]any{"ok": parsed.IsAvailable, "total": parsed.TotalBalance, "currency": currency}
+	balMu.Lock()
+	balCache = out
+	balAt = time.Now()
+	balMu.Unlock()
+	return out
+}
+
+// ---------------- 快捷输入（@文件 / !终端） ----------------
+
+// SearchFiles 工作区内按子串匹配文件路径（@文件 补全用）；跳过重目录，
+// 最多扫描 2 万个条目、返回 20 条。
+func (a *App) SearchFiles(query string) []string {
+	ws := tools.GetWorkspace()
+	if ws == "" {
+		return []string{}
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	skip := map[string]bool{
+		".git": true, "node_modules": true, "target": true, "dist": true,
+		"bin": true, "obj": true, "__pycache__": true, ".venv": true, "venv": true, "vendor": true,
+	}
+	out := []string{}
+	scanned := 0
+	_ = filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if p != ws && (skip[d.Name()] || (strings.HasPrefix(d.Name(), ".") && d.Name() != ".")) {
+				return fs.SkipDir
+			}
+			if strings.Count(p[len(ws):], string(os.PathSeparator)) > 6 {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		scanned++
+		if scanned > 20000 {
+			return fs.SkipAll
+		}
+		if len(out) >= 20 {
+			return fs.SkipAll
+		}
+		rel, rerr := filepath.Rel(ws, p)
+		if rerr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if q == "" || strings.Contains(strings.ToLower(rel), q) {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	return out
+}
+
+// RunTerminalCommand 直接在工作区执行 shell 命令（聊天框 ! 前缀快捷方式，
+// 不经过模型）；60s 超时，输出截断 16KB。
+func (a *App) RunTerminalCommand(cmd string) map[string]any {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return map[string]any{"output": "（空命令）"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ws := tools.GetWorkspace()
+	var c *exec.Cmd
+	if goruntime.GOOS == "windows" {
+		c = exec.CommandContext(ctx, "cmd", "/c", cmd)
+	} else {
+		c = exec.CommandContext(ctx, "bash", "-c", cmd)
+	}
+	c.Dir = ws
+	out, err := c.CombinedOutput()
+	if len(out) > 16*1024 {
+		out = out[:16*1024]
+	}
+	res := string(out)
+	if err != nil {
+		res += "\n[退出码非零: " + err.Error() + "]"
+	}
+	return map[string]any{"output": res}
+}
+
+// CompactHistory 手动压缩当前会话上下文（/compact）。
+// 优先压缩内存历史；应用重启后内存为空，回退到会话数据库并写回。
+// 返回 {ok, before, after}（估算 tokens）。
+func (a *App) CompactHistory() map[string]any {
+	a.mu.Lock()
+	sid, mkey := a.sessionID, a.modelKey
+	a.mu.Unlock()
+	model := config.FindModel(mkey)
+	r := a.runner
+
+	hist := r.History(sid)
+	fromDB := false
+	if len(hist) == 0 {
+		// 内存为空（重启后）：从会话库加载
+		if s := sessions.Load(sid); s != nil && len(s.Messages) > 0 {
+			hist = toMsgs(s.Messages)
+			fromDB = true
+		}
+	}
+	if len(hist) == 0 {
+		return map[string]any{"ok": false, "msg": "当前会话无历史可压缩（新会话或尚未对话）"}
+	}
+	before := ctxcompact.EstimateTokens(hist)
+	emit := func(e msg.Event) {
+		if msg.S(e, "type") == "context_compact" {
+			runtime.EventsEmit(a.ctx, "agent:event", e)
+		}
+	}
+	after := ctxcompact.MaybeCompact(hist, emit, model)
+	afterTokens := ctxcompact.EstimateTokens(after)
+	if afterTokens >= before {
+		return map[string]any{"ok": false, "msg": fmt.Sprintf("上下文 %d tokens 未超预算，无需压缩", before)}
+	}
+	r.SetHistory(sid, after)
+	if fromDB {
+		// 压缩结果写回会话库（保留标题/工作区/备注）
+		if s := sessions.Load(sid); s != nil {
+			_ = sessions.Save(sid, after, s.Title, s.Workspace, s.Notes)
+		}
+	}
+	return map[string]any{"ok": true, "before": before, "after": afterTokens}
+}
+
+// toMsgs []any → []msg.Msg（会话库消息转换）。
+func toMsgs(in []any) []msg.Msg {
+	out := make([]msg.Msg, 0, len(in))
+	for _, v := range in {
+		if m, ok := v.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// Doctor 健康自检（/doctor）：配置目录可写 / 模型配置 / git / 缓存后端。
+func (a *App) Doctor() map[string]any {
+	checks := []map[string]any{}
+	add := func(name string, ok bool, detail string) {
+		checks = append(checks, map[string]any{"name": name, "ok": ok, "detail": detail})
+	}
+	// 1 配置目录可写
+	dir := config.Dir()
+	probe := filepath.Join(dir, ".doctor-probe")
+	if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
+		add(t2("配置目录"), false, dir+" 不可写")
+	} else {
+		_ = os.Remove(probe)
+		add(t2("配置目录"), true, dir)
+	}
+	// 2 模型配置
+	models, def := config.LoadModels()
+	if len(models) == 0 {
+		add(t2("模型配置"), false, "未配置任何模型")
+	} else {
+		add(t2("模型配置"), true, fmt.Sprintf("%d 个模型，默认 %s", len(models), def))
+	}
+	// 3 git
+	if _, err := exec.LookPath("git"); err != nil {
+		add(t2("git"), false, "未安装")
+	} else {
+		add(t2("git"), true, "可用")
+	}
+	// 4 缓存后端
+	add(t2("缓存后端"), true, cache.Stats()["backend"].(string))
+	// 5 会话库
+	if _, err := os.Stat(filepath.Join(dir, "sessions.db")); err == nil {
+		add(t2("会话库"), true, "sessions.db 就绪")
+	} else {
+		add(t2("会话库"), true, "首次使用时创建")
+	}
+	return map[string]any{"checks": checks}
+}
+
+// t2 占位：避免与 t 变量冲突的本地辅助。
+func t2(s string) string { return s }
 
 // ---------------- 本地 GPU 模型（gpulocal 式管理） ----------------
 

@@ -18,6 +18,32 @@ function MsgThumb({ path }: { path: string }) {
   )
 }
 
+// CopyBtn 消息复制按钮：悬停显示，点击复制原文（剪贴板 API 失败时回退 execCommand）
+function CopyBtn({ text }: { text: string }) {
+  const [ok, setOk] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    setOk(true)
+    setTimeout(() => setOk(false), 1200)
+  }
+  return (
+    <button className="msg-copy" title={t('复制', 'Copy')} onClick={copy}>
+      {ok ? t('已复制', 'Copied') : t('复制', 'Copy')}
+    </button>
+  )
+}
+
 function ToolCard({ name, args, result, done }: { name: string; args: string; result: string; done: boolean }) {
   const [open, setOpen] = useState(true)
   return (
@@ -37,19 +63,10 @@ function ToolCard({ name, args, result, done }: { name: string; args: string; re
   )
 }
 
-function fmtCost(v: number): string {
-  if (!v || v <= 0) return '—'
-  if (v < 0.01) return `¥${(v * 7.2).toFixed(3)}`
-  return `¥${(v * 7.2).toFixed(2)}`
-}
-
 export default function ChatView() {
   const items = useStore((s) => s.items)
   const running = useStore((s) => s.running)
-  const usage = useStore((s) => s.usage)
-  const lang = useStore((s) => s.lang)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const hitRate = usage.prompt > 0 ? (usage.cached / usage.prompt) * 100 : 0
 
   useEffect(() => {
     const el = scrollRef.current
@@ -101,6 +118,7 @@ export default function ChatView() {
                       <div className="msg-atts">📎 {others.join('　')}</div>
                     )}
                   </div>
+                  <CopyBtn text={it.text} />
                 </div>
               )
             }
@@ -124,6 +142,7 @@ export default function ChatView() {
                     <div className="typing"><span /><span /><span /></div>
                   )}
                 </div>
+                {it.text && <CopyBtn text={it.text} />}
               </div>
             )
           })}
@@ -134,22 +153,6 @@ export default function ChatView() {
             </div>
           )}
         </div>
-      </div>
-      <div className="usage-bar">
-        <span>{t('会话耗时', 'elapsed')} <b>{fmtCost(usage.cost)}</b></span>
-        {usage.cost > 0 && (
-          <span title={t('按官方定价折算（缓存输入×hit价 + 其余输入×miss价 + 输出×out价）', 'Priced per official rate')}>
-            {t('每千token', '/1k tok')} <b>${((usage.cost / Math.max(usage.total, 1)) * 1000).toFixed(3)}</b>
-          </span>
-        )}
-        <span>{t('累计费用', 'total cost')} <b>{fmtCost(usage.costTotal)}</b></span>
-        <span className="spacer" style={{ flex: 1 }} />
-        <span title={t('服务端前缀缓存命中率（cached/prompt）', 'Provider prefix-cache hit rate')}>
-          {t('命中率', 'hit')} <b style={{ color: hitRate >= 50 ? 'var(--green)' : 'var(--text-dim)' }}>{hitRate.toFixed(0)}%</b>
-        </span>
-        <span>Tokens <b>{usage.total.toLocaleString()}</b></span>
-        <span>{t('请求', 'reqs')} <b>{usage.requests}</b></span>
-        <span>{lang.toUpperCase()}</span>
       </div>
     </>
   )

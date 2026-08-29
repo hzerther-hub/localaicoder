@@ -4,6 +4,10 @@ import Toolbar from './components/Toolbar'
 import Sidebar from './components/Sidebar'
 import ChatView from './components/ChatView'
 import Composer from './components/Composer'
+import StepBar from './components/StepBar'
+import SkillsPanel from './components/SkillsPanel'
+import ChangesPanel from './components/ChangesPanel'
+import StatsBar from './components/StatsBar'
 import EditorPanel from './components/EditorPanel'
 import ApprovalDialog from './components/ApprovalDialog'
 import ModelPanel from './components/ModelPanel'
@@ -45,7 +49,9 @@ export default function App() {
         <Sidebar />
         <div className="chat-col">
           <ChatView />
+          <StepBar />
           <Composer />
+          <StatsBar />
         </div>
         {editor && <EditorPanel />}
       </div>
@@ -53,6 +59,8 @@ export default function App() {
       <ApprovalDialog />
       <ModelPanel />
       <KBPanel />
+      <ChangesPanel />
+      <SkillsPanel />
       <MCPPanel />
       <DispatchPanel />
       <CachePanel />

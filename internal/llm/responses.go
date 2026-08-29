@@ -17,7 +17,7 @@ func streamResponses(args streamArgs, apiKey string) error {
 	}
 	url := strings.TrimRight(args.model.BaseURL, "/") + "/responses"
 	header := authHeaders(args.model, apiKey, "Authorization", "Bearer "+apiKey)
-	resp, err := postJSON(url, header, enc)
+	resp, err := postJSONCtx(args.ctx, url, header, enc)
 	if err != nil {
 		return err
 	}

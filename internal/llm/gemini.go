@@ -20,7 +20,7 @@ func streamGemini(args streamArgs, apiKey string) error {
 	}
 	url := geminiURL(args.model.BaseURL, args.model.ModelID)
 	header := authHeaders(args.model, apiKey, "x-goog-api-key", apiKey)
-	resp, err := postJSON(url, header, enc)
+	resp, err := postJSONCtx(args.ctx, url, header, enc)
 	if err != nil {
 		return err
 	}

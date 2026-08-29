@@ -21,6 +21,7 @@ export default function Sidebar() {
   const sessions = useStore((s) => s.sessions)
   const workspace = useStore((s) => s.workspace)
   const sessionId = useStore((s) => s.sessionId)
+  const runningSessionId = useStore((s) => s.runningSessionId)
   const newSession = useStore((s) => s.newSession)
   const loadSession = useStore((s) => s.loadSession)
   const refresh = useStore((s) => s.refreshSessions)
@@ -45,7 +46,11 @@ export default function Sidebar() {
 
   const rename = async (id: string, cur: string) => {
     const title = prompt(t('修改会话标题', 'Rename session'), cur)
-    if (title && title.trim()) { await api.renameSession(id, title.trim()); refresh() }
+    if (title && title.trim()) {
+      const ok = await api.renameSession(id, title.trim())
+      if (!ok) alert(t('「新会话」为保留名，不能使用', '"新会话" is a reserved name'))
+      refresh()
+    }
   }
   const remove = async (id: string, title: string) => {
     if (!confirm(t(`删除会话「${title}」？`, `Delete "${title}"?`))) return
@@ -81,6 +86,7 @@ export default function Sidebar() {
                 title={`${s.title} · 右键改名`}
               >
                 {s.id === sessionId && <span className="dot" />}
+                {s.id === runningSessionId && <span className="run-mark" title={t('运行中', 'running')}>▶</span>}
                 <span className="tt">{s.title}</span>
                 <span className="ops">
                   <span className="tm">{timeAgo(s.updated)}</span>

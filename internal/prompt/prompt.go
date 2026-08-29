@@ -34,6 +34,7 @@ type Options struct {
 	GitInfo   string   // git 分支/状态摘要；空 = 非 git 仓库
 	Date      string   // 当前日期（YYYY-MM-DD）
 	Addendum  string   // provider/model 级自定义附加段（prompt_addendum）
+	Skills    string   // 技能注入段（skills.PromptSection 产出；空 = 不注入）
 }
 
 // Build 返回提示词分区（调用方以 Join 连接为 system 消息）。
@@ -50,6 +51,10 @@ func Build(o Options) []string {
 		envSection(o),
 		modelSection(o),
 		languageSection(o.Language),
+	}
+	// 技能注入：动态区（随工作区/触发词变化，不能进静态缓存区）
+	if s := strings.TrimSpace(o.Skills); s != "" {
+		out = append(out, s)
 	}
 	if s := strings.TrimSpace(o.Addendum); s != "" {
 		out = append(out, s)
@@ -115,9 +120,10 @@ func toolPolicySection(o Options) string {
 
 func taskDisciplineSection() string {
 	return "完成纪律（必须遵守）：\n" +
-		"1) 动手前列出完成该任务所需的步骤 todo（读文件→改动→验证→收尾），并逐项完成、逐项确认；\n" +
-		"2) 改完必须验证（诊断/测试/运行），发现问题就修，直到通过；\n" +
-		"3) 只有当所有步骤完成且验证通过、目标真正达成时，才给出最终答复；\n" +
+		"1) 动手前先调用 todo_write 【一次性】列出全部步骤（读文件→改动→验证→收尾），不要逐条追加；\n" +
+		"2) 逐项执行：开始某项前置 in_progress、完成置 completed，任何时候清单未完成都不得给出最终答复；\n" +
+		"3) 改完必须验证（诊断/测试/运行），发现问题就修，直到通过；\n" +
+		"4) 只有当所有步骤完成且验证通过、目标真正达成时，才给出最终答复；\n" +
 		"绝不在半途（改了一部分、还没验证通过）就草草结束。" +
 		"请始终基于真实工具/委派结果作答，不要编造文件内容。" +
 		"用户消息可能附带本地媒体文件（图片/音频/视频）：图片直接以视觉输入提供。"

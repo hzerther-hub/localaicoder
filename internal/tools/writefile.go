@@ -49,6 +49,7 @@ func execWriteFile(args map[string]any) string {
 		_ = os.MkdirAll(parent, 0o755)
 	}
 	content := strOf(args["content"])
+	SnapshotBefore(p) // 快照旧内容（改动 diff / 一键还原）
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		return "错误：写入失败：" + err.Error()
 	}

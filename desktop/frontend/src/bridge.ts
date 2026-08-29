@@ -13,6 +13,8 @@ export interface ModelInfo {
   base_url: string; vision: boolean; reasoning: boolean; reasoning_effort: string
   reasoning_choices: string[]; context_window: number
   is_default: boolean; is_current: boolean; local: boolean
+  priced?: boolean // 配置了官方定价（统计条费用显示开关）
+  price_in_hit_per_m?: number; price_in_miss_per_m?: number; price_out_per_m?: number
 }
 export interface SessionMeta { id: string; title: string; updated: number; workspace: string }
 export interface LoadedSession { id: string; title: string; workspace: string; messages: any[]; notes: any[] }
@@ -22,7 +24,21 @@ export interface CompletionItem { label: string; detail: string }
 export interface DiagItem { line: number; mark: string; msg: string }
 export interface AgentEvent { type: string; [k: string]: any }
 export interface KBConfig { enabled: boolean; inject: boolean; auto: boolean; top_k: number; embedding: string; roots: string[] }
+export interface SkillInfo { name: string; description: string; when: string; body: string; scope: string; path: string }
+export interface SkillsSettings { enabled: boolean; distill_model: string }
+export interface GitChange { path: string; status: string; dir: string }
+export interface GitCommit { hash: string; subject: string }
+export interface GitChangesInfo {
+  is_git: boolean; branch: string; session: string[]
+  changes: GitChange[]; history: GitCommit[]
+}
+export interface GitBranchesInfo { ok: boolean; current: string; branches: string[] }
+export interface BalanceInfo { ok: boolean; total?: string; currency?: string }
 
+// 后台运行中的任务（侧栏运行标记 + 暂停/恢复控件用）。
+export interface RunInfo {
+  sessionId: string; model: string; paused: boolean; start: number
+}
 export interface LocalModelInfo {
   key: string; provider_id: string; provider_name: string; model_id: string
   display_name: string; base_url: string; vision: boolean
@@ -54,6 +70,7 @@ export const api = {
   saveProvider: (id: string, name: string, baseURL: string, apiKey: string, apiFormat: string, apiKeys?: string[]) => call<boolean>('SaveProvider', id, name, baseURL, apiKey, apiFormat, apiKeys ?? null),
   addProviderModel: (id: string, modelID: string, vision: boolean) => call<boolean>('AddProviderModel', id, modelID, vision),
   setModelCapability: (key: string, vision?: boolean, reasoning?: boolean, effort?: string) => call<any>('SetModelCapability', key, vision, reasoning, effort),
+  setModelPricing: (key: string, hit: number, miss: number, out: number) => call<{ ok: boolean }>('SetModelPricing', key, hit, miss, out),
   setCurrentModel: (k: string) => call<void>('SetCurrentModel', k),
   setReasoningEffort: (k: string, e: string) => call<void>('SetReasoningEffort', k, e),
   fetchEndpointModels: (base: string, key: string) => call<string[]>('FetchEndpointModels', base, key),
@@ -78,7 +95,10 @@ export const api = {
   cacheInfo: () => call<Record<string, any>>('CacheInfo'),
   getUsage: () => call<Record<string, any>>('GetUsage'),
   clearCache: () => call<boolean>('ClearCache'),
-  stopRun: () => call<void>('StopRun'),
+  stopRun: (sessionId?: string) => call<void>('StopRun', sessionId ?? ''),
+  pauseRun: (sessionId?: string) => call<boolean>('PauseRun', sessionId ?? ''),
+  resumeRun: (sessionId?: string) => call<boolean>('ResumeRun', sessionId ?? ''),
+  listRuns: () => call<RunInfo[]>('ListRuns'),
   respondApproval: (id: string, allow: boolean) => call<void>('RespondApproval', id, allow),
   setPermissionMode: (m: string) => call<void>('SetPermissionMode', m),
   getPermissionMode: () => call<string>('GetPermissionMode'),
@@ -91,6 +111,8 @@ export const api = {
   readFileText: (p: string) => call<string>('ReadFileText', p),
   writeFileText: (p: string, c: string) => call<void>('WriteFileText', p, c),
   listDir: (rel: string) => call<DirEntry[]>('ListDir', rel),
+  searchFiles: (q: string) => call<string[]>('SearchFiles', q),
+  runTerminalCommand: (cmd: string) => call<{ output: string }>('RunTerminalCommand', cmd),
   deletePath: (p: string) => call<{ ok: boolean; msg?: string } | any>('DeletePath', p),
   lspComplete: (p: string, t: string, l: number, c: number) => call<CompletionItem[]>('LspComplete', p, t, l, c),
   lspDiag: (p: string, t: string) => call<DiagItem[]>('LspDiag', p, t),
@@ -105,6 +127,23 @@ export const api = {
   buildKB: (force: boolean) => call<void>('BuildKB', force),
   kbStats: () => call<Record<string, any>>('KBStats'),
   kbQuery: (q: string) => call<any[]>('KBQuery', q),
+  listSkills: () => call<SkillInfo[]>('ListSkills'),
+  listSkillDrafts: () => call<SkillInfo[]>('ListSkillDrafts'),
+  loadSkillText: (p: string) => call<string>('LoadSkillText', p),
+  saveSkillDraft: (p: string, c: string) => call<boolean>('SaveSkillDraft', p, c),
+  saveSkillText: (p: string, c: string) => call<boolean>('SaveSkillText', p, c),
+  installSkill: (url: string) => call<{ installed?: string[]; skipped?: number; error?: string }>('InstallSkill', url),
+  gitChanges: () => call<GitChangesInfo>('GitChanges'),
+  gitBranches: () => call<GitBranchesInfo>('GitBranches'),
+  switchBranch: (name: string) => call<{ ok: boolean; error?: string }>('SwitchGitBranch', name),
+  getBalance: () => call<BalanceInfo>('GetBalance'),
+  compactHistory: () => call<{ ok: boolean; before?: number; after?: number; msg?: string }>('CompactHistory'),
+  doctor: () => call<{ checks: { name: string; ok: boolean; detail: string }[] }>('Doctor'),
+  acceptDraft: (p: string) => call<boolean>('AcceptDraft', p),
+  discardDraft: (p: string) => call<boolean>('DiscardDraft', p),
+  deleteSkill: (p: string) => call<boolean>('DeleteSkill', p),
+  getSkillsSettings: () => call<SkillsSettings>('GetSkillsSettings'),
+  setSkillsSettings: (enabled: boolean, distillModel: string) => call<void>('SetSkillsSettings', enabled, distillModel),
   rebuildIndex: () => call<Record<string, any>>('RebuildIndex'),
 }
 
@@ -201,6 +240,10 @@ async function mock<T>(method: string, args: any[]): Promise<T> {
         { name: 'go.mod', isDir: false, path: 'go.mod' },
         { name: 'README.md', isDir: false, path: 'README.md' },
       ] as T
+    case 'SearchFiles':
+      return ['src/main.tsx', 'src/store.ts', 'src/components/ChatView.tsx'].filter((p) => p.includes(args[0] || '')) as T
+    case 'RunTerminalCommand':
+      return { output: '（mock）命令输出演示' } as T
     case 'ReadFileText':
       return '// 演示文件（mock 模式）\npackage main\n\nfunc main() {\n\tprintln("hello")\n}\n' as T
     case 'WriteFileText': return undefined as T
@@ -216,6 +259,28 @@ async function mock<T>(method: string, args: any[]): Promise<T> {
     case 'SetKBConfig': return undefined as T
     case 'KBStats': return { files: 128, chunks: 1840, db: 'kb/demo.db' } as T
     case 'KBQuery': return [] as T
+    case 'ListSkills':
+      return [{ name: 'demo-fix-flow', description: '示例：修复流程经验', when: '修复,bug', body: '1. 读代码\n2. 改\n3. 跑测试', scope: 'user', path: 'skills/demo-fix-flow.md' }] as T
+    case 'ListSkillDrafts':
+      return [{ name: 'draft-refactor', description: '草稿：重构经验', when: '重构', body: '待确认', scope: 'draft', path: 'skills/drafts/draft-refactor.md' }] as T
+    case 'LoadSkillText':
+      return '---\nname: demo\ndescription: 示例\nwhen: 演示\n---\n\n示例正文\n' as T
+    case 'SaveSkillDraft': return true as T
+    case 'SaveSkillText': return true as T
+    case 'InstallSkill': return { installed: ['demo-skill'], skipped: 0 } as T
+    case 'AcceptDraft': return true as T
+    case 'DiscardDraft': return true as T
+    case 'DeleteSkill': return true as T
+    case 'GetSkillsSettings': return { enabled: false, distill_model: '' } as T
+    case 'SetSkillsSettings': return undefined as T
+    case 'GitChanges':
+      return { is_git: true, branch: 'main', session: ['src/demo.ts'], changes: [{ path: 'src/demo.ts', status: '修改', dir: 'src' }], history: [{ hash: 'abc1234', subject: '演示提交' }] } as T
+    case 'GitBranches': return { ok: true, current: 'main', branches: ['main', 'dev'] } as T
+    case 'SwitchBranch': return { ok: true } as T
+    case 'GetBalance': return { ok: true, total: '95.82', currency: 'USD' } as T
+    case 'CompactHistory': return { ok: true, before: 42000, after: 12000 } as T
+    case 'Doctor':
+      return { checks: [{ name: '配置目录', ok: true, detail: '~/.config/local-ai-studio' }, { name: '模型配置', ok: true, detail: '10 个模型' }] } as T
     default:
       return undefined as T
   }

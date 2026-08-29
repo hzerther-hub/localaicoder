@@ -20,7 +20,9 @@ import (
 	"localai/internal/msg"
 	"localai/internal/prompt"
 	"localai/internal/routing"
+	"localai/internal/skills"
 	"localai/internal/tools"
+	"localai/internal/weblinks"
 )
 
 // 权限模式
@@ -54,6 +56,7 @@ type Agent struct {
 	OnEvent    func(msg.Event)                                             // 事件回调（12 种，见 agent.py 契约）
 	OnApproval func(name string, args map[string]any, summary string) bool // ask 模式审批
 	OnStop     func() bool                                                 // 返回 true 则中止循环
+	OnPause    func()                                                     // 暂停点：非阻塞协作，间隙调用
 	Mode       string
 	Model      *config.ModelConfig
 
@@ -215,9 +218,9 @@ func (a *Agent) isMCPWrite(name string) bool {
 }
 
 // systemPrompt 构建本轮会话的系统提示（分区式：静态区跨会话缓存稳定，
-// 动态区携带环境/模型/语言）。仅会话首轮调用一次，此后随 messages 复用，
-// 多轮请求前缀保持逐字节稳定。
-func (a *Agent) systemPrompt() string {
+// 动态区携带环境/模型/语言/技能注入）。仅会话首轮调用一次，此后随
+// messages 复用，多轮请求前缀保持逐字节稳定。
+func (a *Agent) systemPrompt(userText string) string {
 	ws := tools.GetWorkspace()
 	names := builtinToolNames(a.Mode == ModeReadonly)
 	return prompt.Join(prompt.Build(prompt.Options{
@@ -228,6 +231,7 @@ func (a *Agent) systemPrompt() string {
 		GitInfo:   prompt.GitSummary(ws),
 		Date:      time.Now().Format("2006-01-02"),
 		Addendum:  a.Model.PromptAddendum,
+		Skills:    skills.PromptSection(ws, userText),
 	}))
 }
 
@@ -433,6 +437,19 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 	a.fallbackUsed = false
 	// 智能路由：本轮提问先分类钉住模型（不做也完全兼容）
 	a.routeTurn(userMessage, attachments)
+	// 链接取材（对齐 Python 版 weblinks.py）：消息里的 http(s) URL 自动抓取——
+	// 图片→视觉附件、网页→内联正文、其它→存档说明、失败→注释行，绝不阻断发送。
+	if wl := weblinks.Process(userMessage); len(wl.Inline) > 0 || len(wl.Images) > 0 || len(wl.Notes) > 0 {
+		for _, p := range wl.Images {
+			attachments = append(attachments, p)
+		}
+		var extra []string
+		extra = append(extra, wl.Inline...)
+		extra = append(extra, wl.Notes...)
+		if len(extra) > 0 {
+			userMessage += "\n\n" + strings.Join(extra, "\n")
+		}
+	}
 	userMsg := a.buildUserMessage(userMessage, attachments)
 	var messages []msg.Msg
 	if history != nil {
@@ -440,7 +457,7 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 		messages = append(messages, userMsg)
 	} else {
 		messages = []msg.Msg{
-			{"role": "system", "content": a.systemPrompt()},
+			{"role": "system", "content": a.systemPrompt(userMessage)},
 			userMsg,
 		}
 	}
@@ -459,7 +476,12 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 	a.Messages = messages
 	var finalText []string
 
+	nudgeCount := 0 // 完成纪律兜底：清单未完成时注入「继续」的次数
 	for roundNo := 1; roundNo <= config.MaxToolRounds; roundNo++ {
+		// 暂停点：用户暂停时在此协作阻塞（不中断已生成的流）
+		if a.OnPause != nil {
+			a.OnPause()
+		}
 		// 用户请求停止：带上已有内容立即退出
 		if a.OnStop != nil && a.OnStop() {
 			a.emit(msg.Event{"type": "text", "delta": "\n（已按用户请求停止）"})
@@ -580,18 +602,29 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 			break
 		}
 
-		// 本轮没有工具调用 → 完成；纯文本回复写入缓存
+		// 本轮没有工具调用 → 理论上完成；但若步骤清单仍有未完成项，
+		// 注入「继续」驱动（完成纪律兜底，最多 2 次，防死循环）——
+		// 模型宣布收尾但任务烂尾是最常见的失败模式，必须打断。
 		if len(toolCalls) == 0 {
+			if nudgeCount < 2 && !aborted {
+				if pending := tools.PendingTodoCount(); pending > 0 {
+					messages = append(messages, msg.Msg{
+						"role": "assistant", "content": strings.Join(textCollected, ""),
+					})
+					messages = append(messages, msg.Msg{
+						"role": "user",
+						"content": fmt.Sprintf("任务尚未完成：步骤清单还有 %d 项未完成。请继续执行剩余步骤（开始某项置 in_progress、完成置 completed），不要总结、不要询问，直接继续动手。", pending),
+					})
+					nudgeCount++
+					continue // 继续下一轮（消耗一个轮次名额；中间轮不写缓存）
+				}
+			}
 			finalText = append(finalText, textCollected...)
 			// 缓存键必须用「请求时」的消息列表（不含本轮回复）
 			if !aborted {
 				cache.PutLLM(a.Model.ModelID, messages, schemas, roundEvents)
 			}
-			content := strings.Join(textCollected, "")
-			if content == "" {
-				content = ""
-			}
-			messages = append(messages, msg.Msg{"role": "assistant", "content": content})
+			messages = append(messages, msg.Msg{"role": "assistant", "content": strings.Join(textCollected, "")})
 			break
 		}
 
@@ -606,6 +639,10 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 			tc, ok := tcv.(map[string]any)
 			if !ok {
 				continue
+			}
+			// 暂停点：工具执行间隙也允许暂停
+			if a.OnPause != nil {
+				a.OnPause()
 			}
 			// 每个工具执行前也检查停止
 			if a.OnStop != nil && a.OnStop() {

@@ -18,7 +18,7 @@ func streamAnthropic(args streamArgs, apiKey string) error {
 	}
 	header := authHeaders(args.model, apiKey, "x-api-key", apiKey)
 	header["anthropic-version"] = "2023-06-01"
-	resp, err := postJSON(anthropicURL(args.model.BaseURL), header, enc)
+	resp, err := postJSONCtx(args.ctx, anthropicURL(args.model.BaseURL), header, enc)
 	if err != nil {
 		return err
 	}

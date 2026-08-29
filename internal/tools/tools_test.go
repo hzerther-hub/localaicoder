@@ -179,12 +179,12 @@ func TestIsWriteToolAndSchemas(t *testing.T) {
 		t.Fatal("只读工具不应标记可写")
 	}
 	all := ToolSchemas()
-	if len(all) != 9 {
-		t.Fatalf("应有 9 个内置工具, got %d", len(all))
+	if len(all) != 10 {
+		t.Fatalf("应有 10 个内置工具, got %d", len(all))
 	}
 	ro := ReadOnlySchemas()
-	if len(ro) != 7 {
-		t.Fatalf("只读模式应剩 7 个工具, got %d", len(ro))
+	if len(ro) != 8 {
+		t.Fatalf("只读模式应剩 8 个工具, got %d", len(ro))
 	}
 }
 

@@ -4,10 +4,17 @@
 /bin/
 *.test
 *.out
+*.log
+
+# 构建/缓存产物
+.gobuildcache/
+.gomodcache/
+.zcode/
 
 # 桌面构建产物
 /desktop/bin/
 /desktop/build/bin/
+/desktop/desktop
 /desktop/frontend/dist/*
 !/desktop/frontend/dist/index.html
 /desktop/frontend/wailsjs/

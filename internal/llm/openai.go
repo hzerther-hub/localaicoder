@@ -37,7 +37,7 @@ func streamChatCompletions(args streamArgs, apiKey string) error {
 		return err
 	}
 	url := strings.TrimRight(args.model.BaseURL, "/") + "/chat/completions"
-	resp, err := postJSON(url, authHeaders(args.model, apiKey, "Authorization", "Bearer "+apiKey), enc)
+	resp, err := postJSONCtx(args.ctx, url, authHeaders(args.model, apiKey, "Authorization", "Bearer "+apiKey), enc)
 	if err != nil {
 		return err
 	}

@@ -27,7 +27,7 @@ const (
 
 // Agent 循环安全上限
 const (
-	MaxToolRounds   = 12 // 最多 tool-calling 轮次
+	MaxToolRounds   = 32 // 最多 tool-calling 轮次（多步任务 12 轮常不够）
 	ToolExecTimeout = 60 // 单个工具执行超时（秒）
 )
 
@@ -950,6 +950,44 @@ func GetKBTopK() int { return msg.I(GetKBConfig(), "kb_top_k") }
 // GetKBEmbedding embedding 模型 key；空 = 纯 TF-IDF。
 func GetKBEmbedding() string { return msg.S(GetKBConfig(), "kb_embedding") }
 
+// ---------------- 技能系统设置（对齐 Python 版 skills.enabled / 蒸馏模型） ----------------
+
+// GetSkillsEnabled 技能总开关（system prompt 注入 + 会话结束蒸馏）。
+func GetSkillsEnabled() bool {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	return msg.B(loadModelsDataLocked(), "skills_enabled")
+}
+
+// SetSkillsEnabled 设置技能总开关。
+func SetSkillsEnabled(on bool) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	if msg.B(data, "skills_enabled") != on {
+		data["skills_enabled"] = on
+		saveModelsDataLocked(data)
+	}
+}
+
+// GetSkillsDistillModel 蒸馏模型 key；空 = 默认模型。
+func GetSkillsDistillModel() string {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	return msg.S(loadModelsDataLocked(), "skills_distill_model")
+}
+
+// SetSkillsDistillModel 设置蒸馏模型 key。
+func SetSkillsDistillModel(key string) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	if msg.S(data, "skills_distill_model") != key {
+		data["skills_distill_model"] = key
+		saveModelsDataLocked(data)
+	}
+}
+
 // SetKBRoots 设置知识根目录列表（转绝对路径、去重、排序后写盘）。
 func SetKBRoots(roots []string) {
 	seen := map[string]bool{}
@@ -1030,9 +1068,6 @@ func SetKBTopK(n int) {
 	modelsMu.Lock()
 	defer modelsMu.Unlock()
 	data := loadModelsDataLocked()
-	if msg.I(data, "kb_top_k") != n && data["kb_top_k"] != nil {
-		// 仅当显式配置过才比较；否则直接写入
-	}
 	if msg.I(data, "kb_top_k") == 0 && n == 4 {
 		return // 与默认一致，不落盘
 	}
@@ -1321,6 +1356,46 @@ func UpdateModel(key, baseURL, apiKey, modelID, displayName string,
 		return out
 	}
 	return nil
+}
+
+// SetModelPricing 设置模型官方定价（$/百万 tokens：hit=缓存命中输入、
+// miss=未命中输入、out=输出）。指针为 nil 表示不修改；≤0 表示清除该字段。
+// 统计条「费用」按这三个值折算，未配置则不显示费用。
+func SetModelPricing(key string, hit, miss, out *float64) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	pid, mid, ok := splitKey(key)
+	if !ok {
+		return
+	}
+	for _, pv := range msg.L(data, "providers") {
+		p, ok := pv.(map[string]any)
+		if !ok || msg.S(p, "id") != pid {
+			continue
+		}
+		for _, mv := range msg.L(p, "models") {
+			m, ok := mv.(map[string]any)
+			if !ok || msg.S(m, "id") != mid {
+				continue
+			}
+			apply := func(field string, v *float64) {
+				if v == nil {
+					return
+				}
+				if *v > 0 {
+					m[field] = *v
+				} else {
+					delete(m, field)
+				}
+			}
+			apply("price_in_hit_per_m", hit)
+			apply("price_in_miss_per_m", miss)
+			apply("price_out_per_m", out)
+			saveModelsDataLocked(data)
+			return
+		}
+	}
 }
 
 func splitKey(key string) (pid, mid string, ok bool) {

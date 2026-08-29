@@ -10,6 +10,7 @@ import (
 )
 
 // legacySchemasJSON 重构前单一大字面量的内容（原样拷贝）。
+// 新增工具（todo_write）随功能扩展同步追加于此。
 const legacySchemasJSON = `[
   {
     "type": "function",
@@ -123,6 +124,31 @@ const legacySchemasJSON = `[
           "command": {"type": "string", "description": "要执行的 shell 命令"}
         },
         "required": ["command"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "todo_write",
+      "description": "写入任务步骤清单。开始任务前【一次性】列出全部步骤（不要逐条追加）；执行中随进度更新各项 status：开始某项置 in_progress，完成置 completed。用户界面会将清单渲染为任务步骤条。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "todos": {
+            "type": "array",
+            "description": "完整步骤清单（每次调用都要传全量）",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {"type": "string", "description": "步骤内容（一句话，动词开头）"},
+                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "默认 pending"}
+              },
+              "required": ["title"]
+            }
+          }
+        },
+        "required": ["todos"]
       }
     }
   },

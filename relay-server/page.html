@@ -73,7 +73,7 @@ const D=new URLSearchParams(location.search).get('d');
 const WS=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/s/ws?d='+D;
 const $=id=>document.getElementById(id);
 const log=$('log');
-let ALL=[],wsCur='',sid='',runs=new Set(),cur=null,ws,rid=0,lastCurrent='';
+let ALL=[],wsCur='',sid='',runs=new Set(),cur=null,ws,rid=0,lastCurrent='',openSeq=0;
 const pend={};
 const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML;};
 const ago=ts=>{const d=Date.now()/1000-ts;if(d<60)return '刚刚';if(d<3600)return Math.floor(d/60)+'分';if(d<86400)return Math.floor(d/3600)+'时';return Math.floor(d/86400)+'天';};
@@ -93,8 +93,9 @@ function connect(){
   else if(m.type==='model:changed'){loadModels();}
   else if(m.type==='permission:changed'){try{$('modeSel').value=m.value}catch(e){}}
   else if(m.type==='sessions:changed'){loadState();}
+  else if(m.type==='session:opened'){openS(m.id,false);}
  };
- ws.onopen=()=>{loadState();loadModels();if(sid)openS(sid);};
+ ws.onopen=()=>{loadState();loadModels();if(sid)openS(sid,false);};
  ws.onclose=(e)=>{let why='';const c=e&&e.code;if(c&&c!==1000)why=' (code '+c+')';add('err','连接断开'+why+'，10 秒后重连…');setTimeout(()=>{log.innerHTML='';connect();},10000);};
 }
 function applyState(s){
@@ -121,9 +122,12 @@ function renderSess(){
 }
 function badge(){$('run').textContent=runs.size?'▶ '+runs.size:'';}
 function mark(id,on){ALL.forEach(x=>{if(x.id===id)x.running=on});renderSess();}
-async function openS(id){
+async function openS(id,notify){
+ const seq=++openSeq;
  sid=id;$('drawer').classList.remove('open');log.innerHTML='';cur=null;renderSess();
+ if(notify){try{ws.send(JSON.stringify({type:'open_session',id}))}catch(e){}}
  const m=await req({type:'messages',id});
+ if(seq!==openSeq)return; // 已有更新的 openS，丢弃本次渲染（防切换并发重复）
  if(m.messages&&m.messages.length)m.messages.forEach(x=>add(x.role==='user'?'user':'ai',x.text));
  else log.innerHTML='<div class="empty">（空会话，直接发第一条消息）</div>';
 }
@@ -153,7 +157,7 @@ $('sessList').onclick=e=>{const act=e.target.closest('.s-act');
   if(act.dataset.act==='del'){ if(confirm('删除该会话？')) req({type:'delete_session',id}).then(()=>loadState()); }
   else if(act.dataset.act==='rename'){ const nm=prompt('新标题',''); if(nm&&nm.trim()) req({type:'rename_session',id,title:nm.trim()}).then(()=>loadState()); }
   return; }
- const r=e.target.closest('.s');if(r)openS(r.dataset.id);};
+ const r=e.target.closest('.s');if(r)openS(r.dataset.id,true);};
 $('btnS').onclick=()=>{$('drawer').classList.toggle('open');if($('drawer').classList.contains('open'))loadState();};
 $('drawer').onclick=e=>{if(e.target.id==='drawer')$('drawer').classList.remove('open')};
 $('proj').onchange=()=>{wsCur=$('proj').value;renderSess();};

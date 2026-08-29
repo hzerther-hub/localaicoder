@@ -556,6 +556,10 @@ func (a *App) LoadSession(id string) *LoadedSession {
 	if a.runner != nil {
 		a.runner.SeedHistory(id) // 内存历史为空时从 SQLite 播种（重启后续聊不丢上下文）
 	}
+	// 通知手机端：桌面打开/切换了会话，手机跟随（session:opened 双向跟踪）
+	if a.runner != nil {
+		a.runner.fanout(msg.Event{"type": "session:opened", "id": id})
+	}
 	return &LoadedSession{
 		ID: s.ID, Title: s.Title, Workspace: s.Workspace,
 		Messages: s.Messages, Notes: s.Notes,

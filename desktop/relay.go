@@ -276,7 +276,22 @@ func (rc *relayClient) pump(a *App, ctx context.Context, conn *websocket.Conn, s
 			if id := msg.S(in, "id"); id != "" {
 				a.RenameSession(id, msg.S(in, "title"))
 			}
+		case "open_session":
+			if id := msg.S(in, "id"); id != "" {
+				a.openSessionFromPhone(id)
+			}
 		}
+	}
+}
+
+// openSessionFromPhone 手机端打开某会话 → 桌面切到同一会话（双向跟踪）。
+func (a *App) openSessionFromPhone(id string) {
+	if a == nil || id == "" {
+		return
+	}
+	_ = a.LoadSession(id) // 切工作区 + 设 sessionID + 播种历史 + fanout session:opened(手机)
+	if a.ctx != nil {
+		wailsruntime.EventsEmit(a.ctx, "session:opened", id) // 桌面 UI 跟随切换
 	}
 }
 

@@ -399,6 +399,8 @@ export const useStore = create<UIState>((set, get) => ({
     onEvent('schedule:changed', () => { get().refreshSessions() })
     // 权限模式变化（手机端/其它端切换）：桌面同步权限徽标
     onEvent('permission:changed', (m) => { if (m) set({ mode: m }) })
+    // 手机端打开某会话 → 桌面跟随切换（id 不等于当前才切，避免自身循环）
+    onEvent('session:opened', (id) => { if (id && id !== get().sessionId) get().loadSession(id) })
     onEvent('model:changed', (k) => {
       api.listModels().then((models) => set({ models, currentModel: k }))
       api.getCompactInfo().then((c) => { if (c) set({ compact: c }) })

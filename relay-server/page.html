@@ -3,75 +3,153 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>Local AI Studio · 中继</title>
 <style>
+/* ---------- design tokens · agent telemetry / cockpit ---------- */
+:root{
+  --bg:#0a0e15;            /* ink base, blue-graphite */
+  --bg-1:#0e131c;          /* panels */
+  --bg-2:#141a26;          /* cards / inputs */
+  --bg-3:#1a2231;          /* hover */
+  --border:#1f2838;
+  --border-2:#2a3448;
+  --text:#e7ebf5;
+  --text-dim:#9aa4ba;
+  --text-faint:#5f6b85;
+  --signal:#37d5c3;        /* live teal · running / active / links */
+  --violet:#8b6ff0;        /* AI / brand accent */
+  --ok:#4ade80;            /* done / success */
+  --warn:#ffb648;          /* cooldown / caution */
+  --danger:#ff6b80;        /* error / denied */
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+  --sans:-apple-system,"PingFang SC","Microsoft YaHei",system-ui,"Segoe UI",Roboto,sans-serif;
+}
 *{box-sizing:border-box}
- body{margin:0;background:#0d0e12;color:#e8e8ef;font:15px/1.55 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;display:flex;flex-direction:column;height:100dvh;-webkit-font-smoothing:antialiased}
- header{display:flex;align-items:center;gap:8px;padding:9px 12px;background:rgba(22,23,31,.92);backdrop-filter:blur(10px);border-bottom:1px solid #23242f;position:sticky;top:0;z-index:6}
- select{background:#14151d;border:1px solid #2a2b38;border-radius:10px;color:#e2e2ec;font-size:13.5px;padding:9px 10px;-webkit-appearance:none;appearance:none}
- select:focus{outline:none;border-color:#6c5ce7}
- #btnS{flex:none;background:#1a1b24;border:1px solid #2a2b38;border-radius:10px;color:#c9c9d8;font-size:13px;padding:9px 12px}
- #proj{flex:1;min-width:0}
- #run{color:#3ddc97;font-size:12px;flex:none;font-variant-numeric:tabular-nums}
- .hrow{display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid #1c1d28;background:#131419}
- .ctl{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
- .ctl span{font-size:10.5px;color:#7b7c8a;padding-left:2px}
- .ctl select{width:100%;padding:6px 8px;font-size:12.5px}
- .ctl:nth-child(2),.ctl:nth-child(3){flex:none;width:82px}
-  .stepsbar{display:none;background:#12131a;border-bottom:1px solid #1c1d28;padding:8px 12px;max-height:164px;overflow-y:auto;box-sizing:border-box}
-  .stepsbar.show{display:block}
-  .stepsbar-head{font-size:12px;color:#8fd18f;margin-bottom:6px;font-weight:600}
-  .step{font-size:11.5px;color:#aab0c4;padding:3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .step.done{color:#7b8a6f}
-  .step.run{color:#8fd18f}
-  .step.wait{color:#7b7c8a}
-  .step.deny{color:#ff7b7b}
-  .statsbar{display:none;flex-wrap:wrap;gap:2px 0;padding:5px 12px;background:#0f1014;border-bottom:1px solid #1c1d28;font-size:10.5px;color:#8a8b9a;align-items:center}
-  .statsbar.show{display:flex}
-  .statsbar .st{margin-right:12px;white-space:nowrap}
-  .statsbar .st:not(:last-child)::after{content:"|";color:#3a3b4a;margin-left:12px}
- #mode{font-size:11px;color:#7b7c8a;text-align:center;padding:6px;background:#0f1014}
- .sessname{font-size:12px;color:#aab0c4;padding:7px 14px;background:#12131a;border-bottom:1px solid #1c1d28;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
- #log{flex:1;overflow-y:auto;padding:16px 14px 8px;display:flex;flex-direction:column;gap:10px}
- .user{align-self:flex-end;max-width:84%;background:linear-gradient(135deg,#7c5ce8,#9a6cf0);color:#fff;padding:10px 14px;border-radius:16px 16px 4px 16px;white-space:pre-wrap;word-break:break-word}
- .ai{align-self:flex-start;max-width:84%;background:#1a1b25;color:#e8e8ef;border:1px solid #2a2b38;padding:10px 14px;border-radius:16px 16px 16px 4px;white-space:pre-wrap;word-break:break-word}
- .tool{align-self:flex-start;font-size:12px;color:#8b8b98;background:transparent;padding:0 4px}
- .msg-thumbs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
- .msg-img{width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid rgba(255,255,255,0.18);display:block}
- .att-chip{display:inline-flex;align-items:center;gap:8px;background:#1a1b25;border:1px solid #2a2b38;border-radius:12px;padding:6px 10px;margin:0 6px 6px 0;font-size:12px;color:#c9c9d8}
- .att-chip img{width:56px;height:56px;object-fit:cover;border-radius:9px;border:2px solid #ececf4;background:#fff}
- .err{align-self:stretch;font-size:12.5px;color:#ff8ba0;background:rgba(255,107,129,.08);border:1px solid rgba(255,107,129,.22);padding:8px 12px;border-radius:12px}
- .empty{color:#6a6b78;text-align:center;margin-top:44px;font-size:13.5px}
-  #qc{display:flex;flex-wrap:wrap;gap:9px 20px;padding:11px 14px;border-top:1px solid #1c1d28;background:#131419}
- #qc span{color:#a6abbf;font-size:13.5px;cursor:pointer;line-height:1.7;white-space:nowrap;letter-spacing:.2px}
- #qc span:active{color:#fff;text-decoration:underline}
- form{display:flex;gap:8px;padding:10px 12px;border-top:1px solid #1c1d28;background:#131419}
- form input{flex:1;background:#14151d;border:1px solid #2a2b38;border-radius:12px;padding:11px 14px;color:#e8e8ef;font-size:15px}
- form input:focus{outline:none;border-color:#6c5ce7}
- form button{background:linear-gradient(135deg,#6c5ce7,#8f6cf0);border:0;border-radius:12px;color:#fff;padding:0 20px;font-size:15px;font-weight:600}
- #drawer{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;z-index:9}
- #drawer.open{display:block}
- #drawer .panel{position:absolute;left:0;top:0;bottom:0;width:82%;max-width:340px;background:#15161d;overflow-y:auto;padding:12px;box-shadow:2px 0 24px rgba(0,0,0,.5)}
- .gr{font-size:11px;color:#7b7c8a;padding:10px 6px 6px;letter-spacing:.6px;text-transform:uppercase}
- .s{padding:11px 12px;border-radius:12px;margin-bottom:4px;color:#d6d6e2;cursor:pointer;display:flex;gap:8px;align-items:center;background:#1a1b25}
- .s:active{background:#23242f}
- .s.on{background:linear-gradient(135deg,rgba(108,92,231,.2),rgba(143,108,240,.15));color:#cdc2ff;border:1px solid rgba(108,92,231,.35)}
- .s .run{color:#3ddc97;flex:none}
- .s .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
- .s .ago{font-size:11px;color:#7b7c8a;flex:none}
- .s .s-act{flex:none;font-size:12px;color:#8b8b98;padding:2px 5px;border-radius:6px}
- .s .s-act:active{background:#2a2b3a;color:#fff}
- .s .s-act.del:active{color:#ff8ba0}
- #slash{display:none;position:fixed;left:12px;right:12px;bottom:62px;background:#17181f;border:1px solid #2a2b38;border-radius:14px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.5);z-index:8}
- #slash.open{display:block}
- #slash .si{display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer;border-bottom:1px solid #1e1f29}
- #slash .si:last-child{border-bottom:0}
- #slash .si:active{background:#23242f}
- #slash .si .k{flex:none;color:#8f7cf0;font-family:ui-monospace,SFMono-Regular,monospace;font-size:13px;font-weight:600}
- #slash .si .d{flex:1;font-size:13px;color:#b9b9c8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body{margin:0;background:radial-gradient(1100px 520px at 50% -12%,rgba(55,213,195,.07),transparent 60%),var(--bg);color:var(--text);font:15px/1.55 var(--sans);display:flex;flex-direction:column;height:100dvh;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%}
+button,input,select{font-family:inherit}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#232c3f;border-radius:8px}
+::-webkit-scrollbar-thumb:hover{background:#2e3a52}
+
+/* ---------- header ---------- */
+header{display:flex;align-items:center;gap:9px;padding:9px 12px;background:rgba(13,17,26,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:6}
+#btnS{flex:none;width:36px;height:36px;border:1px solid var(--border-2);border-radius:11px;background:var(--bg-2);color:#c6cde0;font-size:16px;line-height:1;cursor:pointer;display:grid;place-items:center;transition:background .15s,border-color .15s}
+#btnS:hover{background:var(--bg-3);border-color:#3a4460}
+#btnS:active{background:#202a3d}
+#brand{display:flex;flex-direction:column;line-height:1.05;min-width:0;flex:none}
+#brand .word{font-size:14px;font-weight:650;letter-spacing:.02em;white-space:nowrap}
+#brand .sub{font-family:var(--mono);font-size:9.5px;letter-spacing:.34em;color:var(--signal);text-transform:uppercase;margin-top:2px}
+#proj{flex:1;min-width:0}
+select{background:var(--bg-2);border:1px solid var(--border-2);border-radius:11px;color:var(--text);font-size:13.5px;padding:9px 10px;-webkit-appearance:none;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--text-dim) 50%),linear-gradient(135deg,var(--text-dim) 50%,transparent 50%);background-position:calc(100% - 15px) 50%,calc(100% - 11px) 50%;background-size:4px 4px;background-repeat:no-repeat;transition:border-color .15s,background-color .15s}
+select:focus{outline:none;border-color:var(--signal);box-shadow:0 0 0 3px rgba(55,213,195,.14)}
+select:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+#run{flex:none;font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--signal);font-size:12px;font-weight:600;letter-spacing:.02em;white-space:nowrap;display:grid;grid-auto-flow:column;align-items:center;gap:5px}
+#run:empty{display:none}
+/* live signal lamp — the signature */
+#conn{flex:none;width:9px;height:9px;border-radius:50%;background:#2b3549;transition:background .2s,box-shadow .2s}
+#conn.live{background:var(--signal);box-shadow:0 0 0 3px rgba(55,213,195,.15)}
+#conn.working{background:var(--signal);animation:pulse 1.5s ease-in-out infinite}
+#conn.dead{background:var(--danger);box-shadow:0 0 0 3px rgba(255,107,128,.15)}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(55,213,195,.15)}50%{box-shadow:0 0 0 7px rgba(55,213,195,.02)}}
+
+/* ---------- control strip (model / effort / permission) ---------- */
+.hrow{display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--bg-1)}
+.ctl{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.ctl span{font-family:var(--mono);font-size:10px;color:var(--text-faint);letter-spacing:.08em;text-transform:uppercase;padding-left:3px}
+.ctl select{width:100%;padding:7px 24px 7px 9px;font-size:12.5px;background-color:var(--bg-2);border-radius:9px}
+.ctl:nth-child(2),.ctl:nth-child(3){flex:none;width:86px}
+
+/* ---------- session name ribbon ---------- */
+.sessname{font-family:var(--mono);font-size:11.5px;color:var(--text-dim);padding:7px 14px;background:#10141e;border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sessname:empty{display:none}
+
+/* ---------- log ---------- */
+#log{flex:1;overflow-y:auto;padding:18px 14px 10px;display:flex;flex-direction:column;gap:11px}
+#log .empty{color:var(--text-faint);text-align:center;margin:48px auto;font-size:13.5px;max-width:70%}
+.user{align-self:flex-end;max-width:84%;background:linear-gradient(135deg,#7b5be8,#9a6ff0);color:#fff;padding:11px 15px;border-radius:18px 18px 5px 18px;white-space:pre-wrap;word-break:break-word;box-shadow:0 4px 18px rgba(123,91,232,.22);font-size:15px}
+.ai{align-self:flex-start;max-width:84%;background:var(--bg-2);color:var(--text);border:1px solid var(--border-2);border-left:2px solid rgba(55,213,195,.55);padding:11px 15px;border-radius:6px 18px 18px 18px;white-space:pre-wrap;word-break:break-word;font-size:15px}
+.tool{align-self:flex-start;font-family:var(--mono);font-size:12px;color:var(--text-dim);background:transparent;padding:2px 6px;letter-spacing:.01em}
+.err{align-self:stretch;font-size:13px;color:var(--danger);background:rgba(255,107,128,.09);border:1px solid rgba(255,107,128,.24);padding:9px 13px;border-radius:13px}
+.msg-thumbs{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.msg-img{width:84px;height:84px;object-fit:cover;border-radius:9px;border:1px solid rgba(255,255,255,.16);display:block}
+.att-chip{display:inline-flex;align-items:center;gap:8px;background:var(--bg-2);border:1px solid var(--border-2);border-radius:12px;padding:6px 10px;margin:0 6px 6px 0;font-size:12px;color:var(--text-dim)}
+.att-chip img{width:52px;height:52px;object-fit:cover;border-radius:8px;border:2px solid rgba(231,235,245,.7);background:#fff}
+
+/* ---------- agent activity (steps) ---------- */
+.stepsbar{display:none;background:linear-gradient(180deg,rgba(55,213,195,.06),transparent),var(--bg-1);border-bottom:1px solid var(--border);padding:10px 14px;max-height:172px;overflow-y:auto;box-sizing:border-box}
+.stepsbar.show{display:block}
+.stepsbar-head{font-family:var(--mono);font-size:12px;color:var(--signal);margin-bottom:7px;font-weight:600;letter-spacing:.03em;display:flex;align-items:center;gap:7px}
+.stepsbar-head::before{content:"◐";font-size:11px;opacity:.8}
+.step{font-family:var(--mono);font-size:11.5px;color:var(--text-dim);padding:3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.step.done{color:var(--text-faint)}
+.step.run{color:var(--signal)}
+.step.wait{color:var(--text-faint)}
+.step.deny{color:var(--danger)}
+
+/* ---------- telemetry (stats) · collapsible ---------- */
+.statsbar-wrap{display:none;align-items:center;gap:4px;padding:5px 6px 5px 13px;background:#0c111a;border-bottom:1px solid var(--border)}
+.statsbar-wrap.on{display:flex}
+.statsbar{flex:1 1 auto;min-width:0;display:none;font-family:var(--mono);font-size:10.5px;color:var(--text-dim);align-items:center;letter-spacing:.01em}
+.statsbar.show{display:flex;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.statsbar.show::-webkit-scrollbar{display:none}
+.statsbar-wrap.expanded .statsbar.show{flex-wrap:wrap;overflow:visible}
+.statsbar .st{margin-right:13px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.statsbar .st:not(:last-child)::after{content:"|";color:var(--border-2);margin-left:13px}
+#statsToggle{flex:none;border:0;background:transparent;color:var(--text-faint);font-size:12px;line-height:1;cursor:pointer;padding:4px 6px;border-radius:8px}
+#statsToggle:active{color:var(--signal);background:var(--bg-3)}
+
+/* ---------- quick actions ---------- */
+#qc{display:flex;flex-wrap:wrap;gap:8px 9px;padding:11px 14px;border-top:1px solid var(--border);background:var(--bg-1)}
+#qc span{color:var(--text-dim);font-family:var(--mono);font-size:13px;cursor:pointer;line-height:1.7;white-space:nowrap;letter-spacing:.01em;border:1px solid var(--border-2);border-radius:20px;padding:4px 12px;transition:color .15s,border-color .15s,background .15s}
+#qc span:hover{color:var(--text);border-color:#3a4460;background:var(--bg-3)}
+#qc span:active{color:var(--signal);border-color:var(--signal);background:rgba(55,213,195,.08)}
+
+/* ---------- composer ---------- */
+form{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--border);background:var(--bg-1)}
+form input{flex:1;background:var(--bg-2);border:1px solid var(--border-2);border-radius:13px;padding:12px 14px;color:var(--text);font-size:15px;transition:border-color .15s,box-shadow .15s}
+form input:focus{outline:none;border-color:var(--signal);box-shadow:0 0 0 3px rgba(55,213,195,.13)}
+form input:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+form button{background:linear-gradient(135deg,#6c5ce7,#8f6cf0);border:0;border-radius:13px;color:#fff;padding:0 20px;font-size:15px;font-weight:600;cursor:pointer;box-shadow:0 4px 16px rgba(108,92,231,.24);transition:transform .1s,box-shadow .15s}
+form button:active{transform:translateY(1px)}
+
+/* ---------- sessions drawer ---------- */
+#drawer{position:fixed;inset:0;background:rgba(2,4,8,.55);display:none;z-index:9}
+#drawer.open{display:block}
+#drawer .panel{position:absolute;left:0;top:0;bottom:0;width:84%;max-width:360px;background:var(--bg-1);overflow-y:auto;padding:14px;box-shadow:2px 0 28px rgba(0,0,0,.5);border-right:1px solid var(--border)}
+.gr{font-family:var(--mono);font-size:10.5px;color:var(--text-faint);padding:12px 8px 7px;letter-spacing:.1em;text-transform:uppercase}
+.s{padding:11px 12px;border-radius:12px;margin-bottom:5px;color:var(--text-dim);cursor:pointer;display:flex;gap:8px;align-items:center;background:var(--bg-2);border:1px solid transparent;transition:background .15s,border-color .15s}
+.s:hover{background:var(--bg-3)}
+.s:active{background:var(--bg-3)}
+.s.on{background:linear-gradient(135deg,rgba(55,213,195,.13),rgba(55,213,195,.06));color:#e7fbff;border:1px solid rgba(55,213,195,.32)}
+.s .run{color:var(--signal);flex:none}
+.s .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.s .ago{font-family:var(--mono);font-size:10.5px;color:var(--text-faint);flex:none;font-variant-numeric:tabular-nums}
+.s .s-act{flex:none;font-size:12px;color:var(--text-faint);padding:2px 5px;border-radius:6px}
+.s .s-act:active{background:var(--bg-3);color:var(--text)}
+.s .s-act.del:active{color:var(--danger)}
+
+/* ---------- slash menu ---------- */
+#slash{display:none;position:fixed;left:12px;right:12px;bottom:64px;background:var(--bg-1);border:1px solid var(--border-2);border-radius:15px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.55);z-index:8}
+#slash.open{display:block}
+#slash .si{display:flex;align-items:center;gap:11px;padding:12px 14px;cursor:pointer;border-bottom:1px solid var(--border)}
+#slash .si:last-child{border-bottom:0}
+#slash .si:active{background:var(--bg-3)}
+#slash .si .k{flex:none;color:var(--signal);font-family:var(--mono);font-size:13.5px;font-weight:600}
+#slash .si .d{flex:1;font-size:13px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+@media (max-width:380px){
+  #brand .word{font-size:12.5px}
+  #brand .sub{letter-spacing:.22em}
+}
+@media (prefers-reduced-motion:reduce){
+  #conn.working{animation:none}
+  *{transition-duration:.01ms!important}
+}
 </style></head><body>
 <header>
- <button id="btnS">☰ 会话</button>
+ <button id="btnS" aria-label="会话列表">☰</button>
+ <div id="brand"><span class="word">Local AI Studio</span><span class="sub">Relay Console</span></div>
  <select id="proj"></select>
  <span id="run"></span>
+ <span id="conn"></span>
 </header>
 <div class="hrow">
  <div class="ctl"><span>模型</span><select id="model"></select></div>
@@ -83,8 +161,8 @@
 <div id="log"><div class="empty">从左上选择一个会话开始</div></div>
 <div id="slash"></div>
 <div id="steps" class="stepsbar"></div>
-<div id="stats" class="statsbar"></div>
-<div id="qc"><span data-p="列出当前项目的目录结构">列目录</span><span data-p="分析这个项目，找出可能的 BUG 并给出修复">找 BUG</span><span data-p="为最近的代码改动补充单元测试">写测试</span><span data-p="总结最近的 git 提交和改动要点">总结改动</span><span data-p="分析当前代码，给出重构建议">重构建议</span><span data-p="解释当前项目的作用和整体结构">这是什么</span></div>
+<div id="statsBar" class="statsbar-wrap"><div id="stats" class="statsbar"></div><button id="statsToggle" type="button" aria-label="展开用量详情">▸</button></div>
+<div id="qc"><span data-p="列出当前项目的目录结构">列目录</span><span data-p="分析这个项目，找出可能的 BUG 并给出修复">找 BUG</span><span data-p="为最近的代码改动补充单元测试">写测试</span><span data-p="分析当前代码，给出重构建议">重构建议</span></div>
 <div id="pendingAtts"></div>
 <form id="f"><input id="i" placeholder="发消息…" autocomplete="off"><button>发送</button></form>
 <input type="file" id="fileAny" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0">
@@ -98,6 +176,7 @@ let ALL=[],wsCur='',sid='',runs=new Set(),cur=null,ws,rid=0,lastCurrent='',openS
 const pend={};
 const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML;};
 const ago=ts=>{const d=Date.now()/1000-ts;if(d<60)return '刚刚';if(d<3600)return Math.floor(d/60)+'分';if(d<86400)return Math.floor(d/3600)+'时';return Math.floor(d/86400)+'天';};
+function setConn(s){const el=$('conn');if(el)el.className=s;}
 function setSessName(){const el=$('sessName');if(!el)return;const i=ALL.findIndex(x=>x.id===sid);const t=i>=0?ALL[i].title:'';el.textContent=t?('会话：'+t):'（选择一个会话）';}
 function req(o){return new Promise(res=>{const id=++rid;pend[id]=res;ws.send(JSON.stringify(Object.assign(o,{rid:id})));});}
 function addMsgImgs(container,imgs){if(!imgs||!imgs.forEach||!imgs.length)return;const w=document.createElement('div');w.className='msg-thumbs';imgs.forEach(u=>{const im=document.createElement('img');im.className='msg-img';im.src=u;w.appendChild(im);});container.appendChild(w);log.scrollTop=log.scrollHeight;}
@@ -133,8 +212,8 @@ function connect(){
   else if(m.type==='sessions:changed'){loadState();}
   else if(m.type==='session:opened'){openS(m.id,false);}
  };
- ws.onopen=()=>{loadState();loadModels();};
- ws.onclose=(e)=>{let why='';const c=e&&e.code;if(c&&c!==1000)why=' (code '+c+')';add('err','连接断开'+why+'，10 秒后重连…');setTimeout(()=>{log.innerHTML='';connect();},10000);};
+ ws.onopen=()=>{setConn('live');loadState();loadModels();};
+ ws.onclose=(e)=>{let why='';const c=e&&e.code;if(c&&c!==1000)why=' (code '+c+')';setConn('dead');add('err','连接断开'+why+'，10 秒后重连…');setTimeout(()=>{log.innerHTML='';connect();},10000);};
 }
 function applyState(s){
  ALL=s.sessions||[];
@@ -163,12 +242,13 @@ function renderStats(){const el=$('stats');if(!el)return;const u=usage,t=total,c
  const ctx=c.window>0?Math.min(100,(u.prompt_tokens||0)/c.window*100).toFixed(0)+'%':'—';
  const comp=c.window>0?Math.min(100,(c.budget/c.window)*100).toFixed(0)+'%':'—';
  const ws=(window.__ws||'').split('/').filter(Boolean).slice(-2).join('/');
- const parts=['⌂ '+ws,'⎇ '+(window.__branch||'—'),'本次命中 '+turnHit,'平均命中 '+avgHit,'会话 tokens '+fmtN(t.total_tokens||0),'本次 tokens '+fmtN(u.total_tokens||0),'输出 '+fmtN(u.completion_tokens||0),'缓存 '+fmtN(u.cached_tokens||0),'本次费用 '+((u.cost_usd&&u.cost_usd>0)?('¥'+(u.cost_usd*7.2).toFixed(4)):'—'),'上下文 '+ctx,'压缩阈值 '+comp];
- el.innerHTML=parts.map(function(x){return '<span class="st">'+esc(x)+'</span>'}).join('');el.classList.add('show');}
+ // 关键指标排前：折叠成一行时先露「本次命中 / 会话 / 本次缓存 / 本次费用」
+ const parts=['⌂ '+ws,'⎇ '+(window.__branch||'—'),'本次命中 '+turnHit,'会话 '+fmtN(t.total_tokens||0),'本次缓存 '+fmtN(u.cached_tokens||0),'平均命中 '+avgHit,'本次 tokens '+fmtN(u.total_tokens||0),'输出 '+fmtN(u.completion_tokens||0),'本次费用 '+((u.cost_usd&&u.cost_usd>0)?('¥'+(u.cost_usd*7.2).toFixed(4)):'—'),'上下文 '+ctx,'压缩阈值 '+comp];
+ el.innerHTML=parts.map(function(x){return '<span class="st">'+esc(x)+'</span>'}).join('');el.classList.add('show');const _w=el.parentElement;if(_w&&_w.classList)_w.classList.add('on');}
 function renderSteps(){const el=$('steps');if(!el)return;if(!steps.length||!runs.has(sid)){el.classList.remove('show');return;}el.classList.add('show');
  const done=steps.filter(x=>x.status==='done').length;
  const head=done+'/'+steps.length+' · 运行中 · 第 '+round+' 轮';
- el.innerHTML='<div class="stepsbar-head">◐ 任务步骤 '+esc(head)+'</div>'+steps.map(x=>'<div class="step '+x.status+'">'+(x.status==='done'?'✅':x.status==='run'?'●':x.status==='deny'?'✗':'○')+' '+esc(x.title)+'</div>').join('');
+ el.innerHTML='<div class="stepsbar-head">任务步骤 '+esc(head)+'</div>'+steps.map(x=>'<div class="step '+x.status+'">'+(x.status==='done'?'✅':x.status==='run'?'●':x.status==='deny'?'✗':'○')+' '+esc(x.title)+'</div>').join('');
  el.scrollTop=el.scrollHeight;}
 function renderSess(){
  const rows=ALL.filter(x=>(x.workspace||'')===wsCur).sort((a,b)=>b.updated-a.updated);
@@ -179,7 +259,7 @@ function renderSess(){
   +'<span class="ago">'+ago(x.updated)+'</span></div>';});
  $('sessList').innerHTML=h||'<div class="gr">该项目暂无会话</div>';
 }
-function badge(){$('run').textContent=runs.size?'▶ '+runs.size:'';}
+function badge(){const c=$('conn');if(c)c.classList.toggle('working',runs.size>0);$('run').textContent=runs.size?'▶ '+runs.size:'';}
 function mark(id,on){ALL.forEach(x=>{if(x.id===id)x.running=on});renderSess();}
 async function openS(id,notify){
  const seq=++openSeq;
@@ -212,6 +292,7 @@ $('model').onchange=async()=>{const k=$('model').value;try{await req({type:'mode
 };
 $('effort').onchange=async()=>{const k=$('model').value,e=$('effort').value;try{await req({type:'effort',key:k,effort:e});}catch(e){}};
 $('modeSel').onchange=async()=>{const v=$('modeSel').value;try{await req({type:'mode',value:v});}catch(e){}};
+$('statsToggle').onclick=()=>{const w=$('stats').parentElement;if(!w)return;w.classList.toggle('expanded');$('statsToggle').textContent=w.classList.contains('expanded')?'▾':'▸';};
 $('sessList').onclick=e=>{const act=e.target.closest('.s-act');
  if(act){const row=act.closest('.s');if(!row)return;const id=row.dataset.id;
   if(act.dataset.act==='del'){ if(confirm('删除该会话？')) req({type:'delete_session',id}).then(()=>loadState()); }

@@ -267,6 +267,7 @@ type ModelConfig struct {
 	ReasoningEffort  string   // 推理等级；空 = 不发送，用模型默认
 	ReasoningChoices []string // 支持的等级列表（空 = 按 provider 推断）
 	ContextWindow    int      // 上下文窗口（token 数；0 = 未知）
+	MaxOutputTokens  int      // 最大输出 token（0 = 用默认/窗口/4）
 	// 费用单价（USD/1M tokens）；Provider 级 pricing 字段，缺失为 0 = 不统计
 	PriceInHitPerM  float64 `json:"price_in_hit_per_m"`
 	PriceInMissPerM float64 `json:"price_in_miss_per_m"`
@@ -539,6 +540,7 @@ func loadModelsLocked() ([]ModelConfig, string) {
 				ReasoningEffort:  msg.S(m, "reasoning_effort"),
 				ReasoningChoices: ReasoningChoicesFor(pid, pname, m),
 				ContextWindow:    msg.I(m, "context_window"),
+				MaxOutputTokens:  msg.I(m, "max_output_tokens"),
 				PriceInHitPerM:   prices[0],
 				PriceInMissPerM:  prices[1],
 				PriceOutPerM:     prices[2],
@@ -718,7 +720,7 @@ func SetWeComWebhook(url string) {
 func GetFeishuConfig() map[string]any {
 	ch := msg.M(LoadModelsData(), "feishu")
 	return map[string]any{
-		"app_id":    msg.S(ch, "app_id"),
+		"app_id":     msg.S(ch, "app_id"),
 		"app_secret": msg.S(ch, "app_secret"),
 		"allowlist":  msg.S(ch, "allowlist"),
 	}
@@ -784,8 +786,8 @@ func SetRelayConfig(serverURL, deviceToken string) {
 func GetTelegramConfig() map[string]any {
 	d := msg.M(LoadModelsData(), "telegram")
 	return map[string]any{
-		"bot_token":  msg.S(d, "bot_token"),
-		"allowlist":  msg.S(d, "allowlist"),
+		"bot_token": msg.S(d, "bot_token"),
+		"allowlist": msg.S(d, "allowlist"),
 	}
 }
 
@@ -941,13 +943,13 @@ const (
 // SmartRoutingConfig 简单/复杂轮次智能路由配置。
 // simple_model / strong_model 为模型 key；缺省回退 dispatch_flash / dispatch_pro。
 type SmartRoutingConfig struct {
-	Enabled        bool   // 总开关；未显式配置时回退旧 dispatch_smart 开关
-	Configured     bool   // models.json 里是否显式写了 smart_routing 块
+	Enabled        bool // 总开关；未显式配置时回退旧 dispatch_smart 开关
+	Configured     bool // models.json 里是否显式写了 smart_routing 块
 	SimpleModel    string
 	StrongModel    string
-	SimpleMaxChars int    // ≤ 此字符数且无强信号 → simple（默认 160）
-	SimpleMaxWords int    // ≤ 此词数且无强信号 → simple（默认 28）
-	Arbitrate      bool   // unsure 时用本地大脑（dispatch_model）仲裁
+	SimpleMaxChars int  // ≤ 此字符数且无强信号 → simple（默认 160）
+	SimpleMaxWords int  // ≤ 此词数且无强信号 → simple（默认 28）
+	Arbitrate      bool // unsure 时用本地大脑（dispatch_model）仲裁
 }
 
 // GetSmartRouting 读 smart_routing 配置并解析回退：
@@ -1430,7 +1432,7 @@ func RemoveModel(key string) bool {
 // UpdateModel 修改一个已有模型；可改端点/密钥/模型 ID/显示名/识图/推理等级。
 // 改 model_id 会同步更新 default 引用。找不到返回 nil。
 func UpdateModel(key, baseURL, apiKey, modelID, displayName string,
-	vision, reasoning *bool, reasoningEffort *string) *ModelConfig {
+	vision, reasoning *bool, reasoningEffort *string, contextWindow *int) *ModelConfig {
 	modelsMu.Lock()
 	defer modelsMu.Unlock()
 	data := loadModelsDataLocked()
@@ -1487,6 +1489,13 @@ func UpdateModel(key, baseURL, apiKey, modelID, displayName string,
 				delete(m, "reasoning_effort")
 			}
 		}
+		if contextWindow != nil {
+			if *contextWindow > 0 {
+				m["context_window"] = *contextWindow
+			} else {
+				delete(m, "context_window")
+			}
+		}
 		newKey := pid + "/" + msg.S(m, "id")
 		if msg.S(data, "default") == key {
 			data["default"] = newKey
@@ -1497,6 +1506,8 @@ func UpdateModel(key, baseURL, apiKey, modelID, displayName string,
 			DisplayName: msg.S(m, "name"), BaseURL: msg.S(p, "base_url"),
 			APIKey: msg.S(p, "api_key"), Vision: msg.B(m, "vision"),
 			ReasoningEffort: msg.S(m, "reasoning_effort"),
+			ContextWindow:   msg.I(m, "context_window"),
+			MaxOutputTokens: msg.I(m, "max_output_tokens"),
 		}
 		if p["name"] == nil || msg.S(p, "name") == "" {
 			out.ProviderName = pid
@@ -1546,6 +1557,37 @@ func SetModelPricing(key string, hit, miss, out *float64) {
 			return
 		}
 	}
+}
+
+// UpdateModelMaxOutputTokens 设置模型的最大输出 token（0 清除，回退默认/窗口/4）。
+func UpdateModelMaxOutputTokens(key string, n int) *ModelConfig {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	pid, mid, ok := splitKey(key)
+	if !ok {
+		return nil
+	}
+	for _, pv := range msg.L(data, "providers") {
+		p, ok := pv.(map[string]any)
+		if !ok || msg.S(p, "id") != pid {
+			continue
+		}
+		for _, mv := range msg.L(p, "models") {
+			m, ok := mv.(map[string]any)
+			if !ok || msg.S(m, "id") != mid {
+				continue
+			}
+			if n > 0 {
+				m["max_output_tokens"] = n
+			} else {
+				delete(m, "max_output_tokens")
+			}
+			saveModelsDataLocked(data)
+			return FindModel(key)
+		}
+	}
+	return nil
 }
 
 func splitKey(key string) (pid, mid string, ok bool) {

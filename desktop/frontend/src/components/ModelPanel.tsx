@@ -71,6 +71,9 @@ export default function ModelPanel() {
 
   // 定价编辑状态（$/百万：缓存命中输入/未命中输入/输出）
   const [priceEdit, setPriceEdit] = useState<{ key: string; hit: string; miss: string; out: string } | null>(null)
+  // 上下文窗口编辑状态（tokens）
+  const [cwEdit, setCwEdit] = useState<{ key: string; val: string } | null>(null)
+  const [moEdit, setMoEdit] = useState<{ key: string; val: string } | null>(null)
 
   const reload = () => {
     api.listProviders().then((ps) => {
@@ -99,6 +102,30 @@ export default function ModelPanel() {
     reload()
     refresh()
     setTip(t('定价已保存，统计条将显示费用', 'Pricing saved'))
+    setTimeout(() => setTip(''), 1800)
+  }
+
+  const saveCw = async (m: any) => {
+    if (!cwEdit || cwEdit.key !== m.key) return
+    const n = parseInt(cwEdit.val, 10)
+    setCwEdit(null)
+    if (!(Number.isFinite(n) && n > 0)) return
+    await api.setModelContextWindow(m.key, n)
+    reload()
+    refresh()
+    setTip(t('上下文窗口已更新', 'Context window updated'))
+    setTimeout(() => setTip(''), 1800)
+  }
+
+  const saveMo = async (m: any) => {
+    if (!moEdit || moEdit.key !== m.key) return
+    const n = parseInt(moEdit.val, 10)
+    setMoEdit(null)
+    if (!(Number.isFinite(n) && n > 0)) return
+    await api.setModelMaxOutputTokens(m.key, n)
+    reload()
+    refresh()
+    setTip(t('最大输出 token 已更新', 'Max output tokens updated'))
     setTimeout(() => setTip(''), 1800)
   }
 
@@ -238,7 +265,42 @@ export default function ModelPanel() {
                           title={t('识图模型（多模态输入）', 'Vision model')}
                           onClick={(e) => { e.stopPropagation(); setCap(m, { vision: !m.vision }) }}
                         >👁</span>
-                        <span className="cap">{(m.context_window / 1e6).toFixed(1)}M</span>
+                        <span
+                          className="cap"
+                          title={t('上下文窗口（tokens，可编辑）：决定 max_tokens 输出预算（=窗口/4）与压缩阈值', 'Context window (tokens, editable): sets max_tokens budget & compaction threshold')}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            className="cap-edit"
+                            type="number"
+                            min={0}
+                            lang="en"
+                            value={cwEdit && cwEdit.key === m.key ? cwEdit.val : (m.context_window || '')}
+                            placeholder={'—'}
+                            onChange={(e) => setCwEdit({ key: m.key, val: e.target.value })}
+                            onBlur={() => void saveCw(m)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                          />
+                          {m.context_window > 0 ? `${(m.context_window / 1e6).toFixed(1)}M` : ''}
+                        </span>
+                        <span
+                          className="cap"
+                          title={t('最大输出 token（可编辑）：未配置时用默认/窗口/4', 'Max output tokens (editable); defaults if unset')}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            className="cap-edit"
+                            type="number"
+                            min={0}
+                            lang="en"
+                            value={moEdit && moEdit.key === m.key ? moEdit.val : (m.max_output_tokens || '')}
+                            placeholder={t('默认', 'default')}
+                            onChange={(e) => setMoEdit({ key: m.key, val: e.target.value })}
+                            onBlur={() => void saveMo(m)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                          />
+                          {m.max_output_tokens > 0 ? `${(m.max_output_tokens / 1024).toFixed(0)}K` : ''}
+                        </span>
                         {local && (
                           <button className="mm-mini" onClick={async (e) => {
                             e.stopPropagation()

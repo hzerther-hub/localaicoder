@@ -411,11 +411,40 @@ func (a *App) SetModelPricing(key string, hit, miss, out float64) map[string]any
 // SetModelCapability 设置某个模型的单项能力（vision 开关 / reasoning 开关 / reasoning_effort）。
 // 仅更新指定字段，其余保留。返回更新后的模型 key（改 model_id 场景用）。
 func (a *App) SetModelCapability(key string, vision, reasoning *bool, reasoningEffort *string) map[string]any {
-	mc := config.UpdateModel(key, "", "", "", "", vision, reasoning, reasoningEffort)
+	mc := config.UpdateModel(key, "", "", "", "", vision, reasoning, reasoningEffort, nil)
 	if mc == nil {
 		return map[string]any{"ok": false}
 	}
 	return map[string]any{"ok": true, "key": mc.Key, "vision": mc.Vision, "reasoning_effort": mc.ReasoningEffort}
+}
+
+// SetModelContextWindow 设置模型的上下文窗口（tokens）。
+// 影响 StreamChat 的 max_tokens 输出预算（= 窗口/4）与上下文压缩阈值。
+// 传 0 清除该字段（回退全局默认预算）。
+func (a *App) SetModelContextWindow(key string, win int) map[string]any {
+	mc := config.UpdateModel(key, "", "", "", "", nil, nil, nil, &win)
+	if mc == nil {
+		return map[string]any{"ok": false}
+	}
+	runtime.EventsEmit(a.ctx, "model:changed", key)
+	a.updateWindowTitle()
+	if a.runner != nil {
+		a.runner.fanout(msg.Event{"type": "model:changed", "key": key, "context_window": win})
+	}
+	return map[string]any{"ok": true, "key": mc.Key, "context_window": mc.ContextWindow}
+}
+
+// SetModelMaxOutputTokens 设置模型的最大输出 token（0 清除，回退默认/窗口/4）。
+func (a *App) SetModelMaxOutputTokens(key string, n int) map[string]any {
+	mc := config.UpdateModelMaxOutputTokens(key, n)
+	if mc == nil {
+		return map[string]any{"ok": false}
+	}
+	runtime.EventsEmit(a.ctx, "model:changed", key)
+	if a.runner != nil {
+		a.runner.fanout(msg.Event{"type": "model:changed", "key": key, "max_output_tokens": n})
+	}
+	return map[string]any{"ok": true, "key": mc.Key, "max_output_tokens": mc.MaxOutputTokens}
 }
 
 // AddProviderModel 给指定供应商追加一个模型 ID。
@@ -442,7 +471,7 @@ func (a *App) SetCurrentModel(key string) {
 
 // SetReasoningEffort 为当前模型保存推理等级。
 func (a *App) SetReasoningEffort(key, effort string) {
-	config.UpdateModel(key, "", "", "", "", nil, nil, &effort)
+	config.UpdateModel(key, "", "", "", "", nil, nil, &effort, nil)
 	runtime.EventsEmit(a.ctx, "model:changed", key)
 	a.updateWindowTitle()
 	// 手机端实时同步思考等级
@@ -474,7 +503,7 @@ func (a *App) RemoveModel(key string) bool { return config.RemoveModel(key) }
 
 // UpdateModelMeta 修改模型（端点/密钥/显示名/能力）。
 func (a *App) UpdateModelMeta(key, baseURL, apiKey, displayName string, vision, reasoning *bool) bool {
-	return config.UpdateModel(key, baseURL, apiKey, "", displayName, vision, reasoning, nil) != nil
+	return config.UpdateModel(key, baseURL, apiKey, "", displayName, vision, reasoning, nil, nil) != nil
 }
 
 // ---------------- 会话 ----------------

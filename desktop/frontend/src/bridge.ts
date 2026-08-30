@@ -12,6 +12,7 @@ export interface ModelInfo {
   key: string; provider_name: string; model_id: string; display_name: string
   base_url: string; vision: boolean; reasoning: boolean; reasoning_effort: string
   reasoning_choices: string[]; context_window: number
+  max_output_tokens: number // 最大输出 token（0 = 默认/窗口/4）
   is_default: boolean; is_current: boolean; local: boolean
   priced?: boolean // 配置了官方定价（统计条费用显示开关）
   price_in_hit_per_m?: number; price_in_miss_per_m?: number; price_out_per_m?: number
@@ -83,6 +84,8 @@ export const api = {
   saveProvider: (id: string, name: string, baseURL: string, apiKey: string, apiFormat: string, apiKeys?: string[]) => call<boolean>('SaveProvider', id, name, baseURL, apiKey, apiFormat, apiKeys ?? null),
   addProviderModel: (id: string, modelID: string, vision: boolean) => call<boolean>('AddProviderModel', id, modelID, vision),
   setModelCapability: (key: string, vision?: boolean, reasoning?: boolean, effort?: string) => call<any>('SetModelCapability', key, vision, reasoning, effort),
+  setModelContextWindow: (key: string, win: number) => call<{ ok: boolean; key?: string; context_window?: number }>('SetModelContextWindow', key, win),
+  setModelMaxOutputTokens: (key: string, n: number) => call<{ ok: boolean; key?: string; max_output_tokens?: number }>('SetModelMaxOutputTokens', key, n),
   setModelPricing: (key: string, hit: number, miss: number, out: number) => call<{ ok: boolean }>('SetModelPricing', key, hit, miss, out),
   setCurrentModel: (k: string) => call<void>('SetCurrentModel', k),
   setReasoningEffort: (k: string, e: string) => call<void>('SetReasoningEffort', k, e),

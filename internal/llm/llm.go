@@ -97,8 +97,11 @@ func StreamChat(model config.ModelConfig, messages []msg.Msg,
 		maxTokens = 16384
 	}
 	// 输出预算（Reasonix output_budget 思想）：模型声明了窗口时，
-	// 输出上限 = min(全局上限, 窗口的 1/4)，避免输出把剩余上下文挤爆
-	if model.ContextWindow > 0 {
+	// 输出上限 = min(全局上限, 窗口的 1/4)，避免输出把剩余上下文挤爆。
+	// 若模型显式配置了 max_output_tokens，则该值优先作为输出上限。
+	if model.MaxOutputTokens > 0 && model.MaxOutputTokens < maxTokens {
+		maxTokens = model.MaxOutputTokens
+	} else if model.ContextWindow > 0 {
 		if quarter := model.ContextWindow / 4; quarter < maxTokens {
 			maxTokens = quarter
 		}

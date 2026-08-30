@@ -24,6 +24,8 @@
   .step.run{color:#8fd18f}
   .step.wait{color:#7b7c8a}
   .step.deny{color:#ff7b7b}
+  .statsbar{font-size:10.5px;color:#8a8b9a;padding:5px 12px;background:#0f1014;border-bottom:1px solid #1c1d28;white-space:nowrap;overflow-x:auto;display:none}
+  .statsbar.show{display:block}
  #mode{font-size:11px;color:#7b7c8a;text-align:center;padding:6px;background:#0f1014}
  .sessname{font-size:12px;color:#aab0c4;padding:7px 14px;background:#12131a;border-bottom:1px solid #1c1d28;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
  #log{flex:1;overflow-y:auto;padding:16px 14px 8px;display:flex;flex-direction:column;gap:10px}
@@ -76,6 +78,7 @@
 </div>
 <div id="sessName" class="sessname"></div>
 <div id="mode"></div>
+<div id="stats" class="statsbar"></div>
 <div id="drawer"><div class="panel" id="sessList"></div></div>
 <div id="log"><div class="empty">从左上选择一个会话开始</div></div>
 <div id="slash"></div>
@@ -114,7 +117,8 @@ function connect(){
   else if(m.type==='error'){add('err',m.delta);cur=null;}
   else if(m.type==='run:started'){runs.add(m.sessionId);mark(m.sessionId,true);badge();if(m.sessionId===sid){steps=[];round=0;planned=false;renderSteps();}}
   else if(m.type==='run:finished'){runs.delete(m.sessionId);mark(m.sessionId,false);badge();cur=null;if(m.sessionId===sid){steps=[];renderSteps();}}
-  else if(m.type==='round'){round=+m.n;renderSteps();}
+  else if(m.type==='usage'){usage=m.usage||{};total=m.total||{};renderStats();}
+ else if(m.type==='round'){round=+m.n;renderSteps();}
  else if(m.type==='tool_start'){
   if(!runs.has(sid)){renderSteps();return;}
   if(m.name==='todo_write'){const ts=(m.args&&m.args.todos)||[];steps=ts.slice(0,20).map((t,i)=>({name:'todo',title:String((t&&t.title)||('步骤 '+(i+1))).slice(0,80),status:(t&&t.status)==='completed'?'done':(t&&t.status)==='in_progress'?'run':'wait'}));planned=true;}
@@ -139,7 +143,9 @@ function applyState(s){
  const sel=$('proj');const keep=wsCur||s.workspace;
  sel.innerHTML=Object.keys(map).sort((a,b)=>map[b].u-map[a].u).map(w=>'<option value="'+esc(w)+'">'+esc(w.split('/').filter(Boolean).pop()||w)+' ('+map[w].n+')</option>').join('');
  wsCur=map[keep]?keep:(sel.options[0]?sel.options[0].value:'');sel.value=wsCur;
- runs=new Set(ALL.filter(x=>x.running).map(x=>x.id));
+ window.__ws=s.workspace||'';window.__branch=s.branch||'';try{compact=(s.compact&&{budget:Number(s.compact.budget)||0,window:Number(s.compact.window)||0})||compact}catch(e){}
+renderStats();
+runs=new Set(ALL.filter(x=>x.running).map(x=>x.id));
  $('mode').textContent='中继 '+D.slice(0,6)+'… · 权限 '+(s.mode||'')+(runs.size?' · '+runs.size+' 运行中':'');
   renderSteps(); // 状态刷新后重算步骤栏（含 runs 更新后，保证当前会话运行中能显示）
  try{$('modeSel').value=s.mode||'always'}catch(e){}
@@ -149,6 +155,16 @@ function applyState(s){
 }
 function loadState(){req({type:'state'}).then(applyState);}
 let steps=[],round=0,planned=false;
+let usage={},total={},compact={budget:0,window:0};
+function fmtN(n){n=Number(n)||0;return n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(n)}
+function renderStats(){const el=$('stats');if(!el)return;const u=usage,t=total,c=compact;
+ const turnHit=u.prompt_tokens>0?((u.cached_tokens||0)/u.prompt_tokens*100).toFixed(1)+'%':'—';
+ const avgHit=t.prompt_tokens>0?((t.cached_tokens||0)/t.prompt_tokens*100).toFixed(2)+'%':'—';
+ const ctx=c.window>0?Math.min(100,(u.prompt_tokens||0)/c.window*100).toFixed(0)+'%':'—';
+ const comp=c.window>0?Math.min(100,(c.budget/c.window)*100).toFixed(0)+'%':'—';
+ const ws=(window.__ws||'').split('/').filter(Boolean).slice(-2).join('/');
+ const parts=['⌂ '+ws,'⎇ '+(window.__branch||'—'),'本次命中 '+turnHit,'平均命中 '+avgHit,'会话 tokens '+fmtN(t.total_tokens||0),'本次 tokens '+fmtN(u.total_tokens||0),'输出 '+fmtN(u.completion_tokens||0),'缓存 '+fmtN(u.cached_tokens||0),'本次费用 '+((u.cost_usd&&u.cost_usd>0)?('¥'+(u.cost_usd*7.2).toFixed(4)):'—'),'上下文 '+ctx,'压缩阈值 '+comp];
+ el.innerHTML=parts.join('<i class="sep">|</i>');el.classList.add('show');}
 function renderSteps(){const el=$('steps');if(!el)return;if(!steps.length||!runs.has(sid)){el.classList.remove('show');return;}el.classList.add('show');
  const done=steps.filter(x=>x.status==='done').length;
  const head=done+'/'+steps.length+' · 运行中 · 第 '+round+' 轮';
@@ -213,6 +229,12 @@ function addAttChip(a){const box=$('pendingAtts');if(!box)return;const c=documen
 function readAsImage(file,cb){const r=new FileReader();r.onload=()=>{const img=new Image();img.onload=()=>{const max=1280;let w=img.width,h=img.height;if(w>max||h>max){if(w>=h){h=Math.round(h*max/w);w=max;}else{w=Math.round(w*max/h);h=max;}}const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);cb(c.toDataURL('image/jpeg',0.8));};img.src=r.result;};r.readAsDataURL(file);}
 function readAsData(file,cb){const r=new FileReader();r.onload=()=>cb(r.result);r.readAsDataURL(file);}
 $('fileAny').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const isImg=(f.type||'').startsWith('image/');const cb=d=>{pendingAtts.push({name:f.name,data:d});addAttChip({name:f.name,data:d});};if(isImg)readAsImage(f,cb);else readAsData(f,cb);e.target.value='';});
+function addPasted(f){if(!f)return;const isImg=(f.type||'').startsWith('image/');const cb=d=>{pendingAtts.push({name:f.name||'pasted',data:d});addAttChip({name:f.name||'pasted',data:d});};if(isImg)readAsImage(f,cb);else readAsData(f,cb);}
+// 粘贴（图片/文件）
+$('i').addEventListener('paste',e=>{const items=(e.clipboardData&&e.clipboardData.items)||[];const it=[].slice.call(items).find(x=>x.type&&x.type.startsWith('image/'));if(it){e.preventDefault();addPasted(it.getAsFile());}});
+// 拖放（图片/文件）→ 加入附件
+document.addEventListener('dragover',e=>e.preventDefault());
+document.addEventListener('drop',e=>{e.preventDefault();const fs=(e.dataTransfer&&e.dataTransfer.files)||[];[].slice.call(fs).forEach(addPasted);});
 const CMDS=[['/file','选择文件/图片，传给PC识别'],['/列目录','列出当前项目的目录结构'],['/找bug','分析这个项目，找出可能的 BUG 并给出修复'],['/写测试','为最近的代码改动补充单元测试'],['/总结','总结最近的 git 提交和改动要点'],['/重构','分析当前代码，给出重构建议'],['/解释','解释当前项目的作用和整体结构']];
 function slashShow(q){
  const box=$('slash');

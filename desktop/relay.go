@@ -513,7 +513,8 @@ func relayState(a *App, rid any) map[string]any {
 	a.mu.Unlock()
 	return map[string]any{"type": "state", "rid": rid,
 		"workspace": tools.GetWorkspace(), "mode": mode, "current": cur,
-		"current_session": sid, "sessions": out}
+		"current_session": sid, "sessions": out,
+		"branch": tools.GitBranch(tools.GetWorkspace()), "compact": a.GetCompactInfo()}
 }
 
 // relayMessages 会话消息帧。

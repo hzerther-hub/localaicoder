@@ -207,9 +207,27 @@ export default function Composer() {
 
   const onPaste = (e: React.ClipboardEvent) => {
     const pasted = e.clipboardData.getData('text')
-    if (!pasted || pasted.includes('\n')) return
-    const m = pasted.trim().match(/^(?:file:\/\/)?((?:[A-Za-z]:[\\/]|\/)[^\s]+)$/u)
-    if (m) { e.preventDefault(); addAttachment(m[1]) }
+    if (pasted && !pasted.includes('\n')) {
+      const m = pasted.trim().match(/^(?:file:\/\/)?((?:[A-Za-z]:[\\/]|\/)[^\s]+)$/u)
+      if (m) { e.preventDefault(); addAttachment(m[1]); return }
+    }
+    // 粘贴图片（剪贴板 image item）：读成 dataURL → 保存 → 加入附件
+    const items = Array.from(e.clipboardData.items || [])
+    const imgItem = items.find((x) => x.type && x.type.startsWith('image/'))
+    if (imgItem) {
+      e.preventDefault()
+      const f = imgItem.getAsFile()
+      if (f) {
+        const r = new FileReader()
+        r.onload = async () => {
+          try {
+            const path = await api.saveDataURL(String(r.result))
+            if (path) addAttachment(path)
+          } catch { /* 保存失败忽略 */ }
+        }
+        r.readAsDataURL(f)
+      }
+    }
   }
 
   // fileURIToPath 解码 file:// URI 为本地路径（兼容 file:///path 与 file://host/path）。

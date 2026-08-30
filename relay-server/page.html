@@ -112,16 +112,16 @@ function connect(){
   else if(m.type==='text'){if(!cur)cur=add('ai','');cur.textContent+=m.delta;log.scrollTop=log.scrollHeight;}
   else if(m.type==='tool'){add('tool','🔧 '+m.delta);}
   else if(m.type==='error'){add('err',m.delta);cur=null;}
-  else if(m.type==='run:started'){runs.add(m.sessionId);mark(m.sessionId,true);badge();if(m.sessionId===sid){steps=[];round=0;renderSteps();}}
+  else if(m.type==='run:started'){runs.add(m.sessionId);mark(m.sessionId,true);badge();if(m.sessionId===sid){steps=[];round=0;planned=false;renderSteps();}}
   else if(m.type==='run:finished'){runs.delete(m.sessionId);mark(m.sessionId,false);badge();cur=null;if(m.sessionId===sid){steps=[];renderSteps();}}
   else if(m.type==='round'){round=+m.n;renderSteps();}
  else if(m.type==='tool_start'){
   if(!runs.has(sid)){renderSteps();return;}
-  if(m.name==='todo_write'){const ts=(m.args&&m.args.todos)||[];steps=ts.slice(0,20).map((t,i)=>({name:'todo',title:String((t&&t.title)||('步骤 '+(i+1))).slice(0,80),status:(t&&t.status)==='completed'?'done':(t&&t.status)==='in_progress'?'run':'wait'}));}
-  else{steps=steps.filter(x=>x.name!=='…');steps.push({name:m.name,title:m.name,status:'run'});}
+  if(m.name==='todo_write'){const ts=(m.args&&m.args.todos)||[];steps=ts.slice(0,20).map((t,i)=>({name:'todo',title:String((t&&t.title)||('步骤 '+(i+1))).slice(0,80),status:(t&&t.status)==='completed'?'done':(t&&t.status)==='in_progress'?'run':'wait'}));planned=true;}
+  else if(!planned){steps=steps.filter(x=>x.name!=='…');steps.push({name:m.name,title:m.name,status:'run'});}
   renderSteps();
  }
- else if(m.type==='tool_result'){if(!runs.has(sid)){renderSteps();return;}if(m.name!=='todo_write'){for(let i=steps.length-1;i>=0;i--){if(steps[i].name===m.name&&steps[i].status==='run'){steps[i].status='done';break;}}}renderSteps();}
+ else if(m.type==='tool_result'){if(!runs.has(sid)){renderSteps();return;}if(m.name!=='todo_write'&&!planned){for(let i=steps.length-1;i>=0;i--){if(steps[i].name===m.name&&steps[i].status==='run'){steps[i].status='done';break;}}}renderSteps();}
  else if(m.type==='tool_denied'){if(!runs.has(sid)){renderSteps();return;}for(let i=steps.length-1;i>=0;i--){if(steps[i].name===m.name&&steps[i].status==='run'){steps[i].status='deny';break;}}renderSteps();}
  else if(m.type==='model:changed'){loadModels();}
   else if(m.type==='permission:changed'){try{$('modeSel').value=m.value}catch(e){}}
@@ -147,10 +147,11 @@ function applyState(s){
  setSessName();renderSess();badge();
 }
 function loadState(){req({type:'state'}).then(applyState);}
-let steps=[],round=0;
+let steps=[],round=0,planned=false;
 function renderSteps(){const el=$('steps');if(!el)return;if(!steps.length||!runs.has(sid)){el.classList.remove('show');return;}el.classList.add('show');
- const head='任务步骤 '+steps.length+'/'+steps.length+' · 运行中 · 第 '+round+' 轮';
- el.innerHTML='<div class="stepsbar-head">'+esc(head)+'</div>'+steps.map(x=>'<div class="step '+x.status+'">'+(x.status==='done'?'✅':x.status==='run'?'●':x.status==='deny'?'✗':'○')+' '+esc(x.title)+'</div>').join('');
+ const done=steps.filter(x=>x.status==='done').length;
+ const head=done+'/'+steps.length+' · 运行中 · 第 '+round+' 轮';
+ el.innerHTML='<div class="stepsbar-head">◐ 任务步骤 '+esc(head)+'</div>'+steps.map(x=>'<div class="step '+x.status+'">'+(x.status==='done'?'✅':x.status==='run'?'●':x.status==='deny'?'✗':'○')+' '+esc(x.title)+'</div>').join('');
  el.scrollTop=el.scrollHeight;}
 function renderSess(){
  const rows=ALL.filter(x=>(x.workspace||'')===wsCur).sort((a,b)=>b.updated-a.updated);

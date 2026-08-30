@@ -73,6 +73,11 @@
  <select id="proj"></select>
  <span id="run"></span>
 </header>
+<div class="hrow">
+ <div class="ctl"><span>模型</span><select id="model"></select></div>
+ <div class="ctl"><span>推理</span><select id="effort"></select></div>
+ <div class="ctl"><span>权限</span><select id="modeSel"><option value="always">总是允许</option><option value="ask">询问</option><option value="readonly">只读</option></select></div>
+</div>
 <div id="sessName" class="sessname"></div>
 <div id="stats" class="statsbar"></div>
 <div id="drawer"><div class="panel" id="sessList"></div></div>
@@ -188,19 +193,25 @@ async function openS(id,notify){
 }
 async function loadModels(){
  let d; try{ d=await req({type:'models'});}catch(e){d=null;}
-  const sel=$('model');if(!sel){return;} // 已去掉模型下拉，仅同步数据
+  const sel=$('model');
  if(!d||!d.models||!d.models.length){ sel.innerHTML='<option value="">正在连接桌面…</option>'; fillEffort(null); return; }
  sel.innerHTML=d.models.map(x=>'<option value="'+esc(x.key)+'"'+(x.is_current?' selected':'')+'>'+esc(x.model_id||x.display_name)+(x.vision?' 👁':'')+(x.reasoning?' 🧠':'')+'</option>').join('');
  fillEffort(d.models.find(x=>x.is_current)||null);
 }
 function fillEffort(mi){
-  const ef=$('effort');if(!ef){return;} // 已去掉推理下拉
+  const ef=$('effort');
  const choices=(mi&&mi.reasoning&&mi.reasoning_choices)?mi.reasoning_choices:[];
  ef.innerHTML=choices.length
    ? choices.map(c=>'<option value="'+esc(c)+'"'+((mi.reasoning_effort||'')===c?' selected':'')+'>'+esc(c===''?'默认':c)+'</option>').join('')
    : '<option value="">—</option>';
  if(mi&&mi.reasoning_effort)ef.value=mi.reasoning_effort;
 }
+$('model').onchange=async()=>{const k=$('model').value;try{await req({type:'model',key:k});}catch(e){}
+ try{const d=await req({type:'models'});if(d)sel2models(d);}catch(e){}
+ function sel2models(d){const s=$('model');s.innerHTML=d.models.map(x=>'<option value="'+esc(x.key)+'"'+(x.is_current?' selected':'')+'>'+esc(x.model_id||x.display_name)+'</option>').join('');fillEffort(d.models.find(x=>x.is_current)||null);}
+};
+$('effort').onchange=async()=>{const k=$('model').value,e=$('effort').value;try{await req({type:'effort',key:k,effort:e});}catch(e){}};
+$('modeSel').onchange=async()=>{const v=$('modeSel').value;try{await req({type:'mode',value:v});}catch(e){}};
 $('sessList').onclick=e=>{const act=e.target.closest('.s-act');
  if(act){const row=act.closest('.s');if(!row)return;const id=row.dataset.id;
   if(act.dataset.act==='del'){ if(confirm('删除该会话？')) req({type:'delete_session',id}).then(()=>loadState()); }

@@ -141,6 +141,7 @@ function applyState(s){
  wsCur=map[keep]?keep:(sel.options[0]?sel.options[0].value:'');sel.value=wsCur;
  runs=new Set(ALL.filter(x=>x.running).map(x=>x.id));
  $('mode').textContent='中继 '+D.slice(0,6)+'… · 权限 '+(s.mode||'')+(runs.size?' · '+runs.size+' 运行中':'');
+  renderSteps(); // 状态刷新后重算步骤栏（含 runs 更新后，保证当前会话运行中能显示）
  try{$('modeSel').value=s.mode||'always'}catch(e){}
  const _cur=s.current||'';if(_cur&&_cur!==lastCurrent){lastCurrent=_cur;loadModels();}
  const _cs=s.current_session||'';if(_cs&&_cs!==sid){openS(_cs,false);}

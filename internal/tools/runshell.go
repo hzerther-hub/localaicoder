@@ -3,13 +3,54 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	"localai/internal/config"
 )
+
+// cdOutRe 匹配 cd 后的目标。
+var cdOutRe = regexp.MustCompile(`\bcd\s+([^\s;&|<>]+)`)
+
+// commandEscapesWorkspace 命令里是否有 cd 到工作区外的绝对路径。
+// 让 agent 始终以"当前打开的项目（工作区）"为准，不跑到别的目录。
+func commandEscapesWorkspace(cmd string) bool {
+	ws := GetWorkspace()
+	if ws == "" {
+		return false
+	}
+	for _, m := range cdOutRe.FindAllStringSubmatch(cmd, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		p := m[1]
+		// ~ / ~/… 展开为主目录后再判断
+		if p == "~" || strings.HasPrefix(p, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				exp := home
+				if strings.HasPrefix(p, "~/") {
+					exp = filepath.Join(home, p[2:])
+				}
+				if !PathInWorkspace(exp, ws) {
+					return true
+				}
+			}
+			continue
+		}
+		if !filepath.IsAbs(p) {
+			continue // 相对 cd 暂不拦截（相对工作区解析）
+		}
+		if !PathInWorkspace(p, ws) {
+			return true
+		}
+	}
+	return false
+}
 
 func init() {
 	register(&Tool{
@@ -45,6 +86,10 @@ func execRunShell(args map[string]any) string {
 		if hit := ShellCommandBlocked(cmdStr); hit != "" {
 			return "错误：沙箱拦截了高危命令（规则 " + hit + "）。" +
 				"确需执行请由用户手动运行，或设 LAS_SANDBOX=off 关闭沙箱。"
+		}
+		if commandEscapesWorkspace(cmdStr) {
+			return "错误：命令尝试 cd 到工作区外（" + GetWorkspace() + "）。" +
+				"请仅在当前打开的项目内操作，使用工作区相对路径或 cd 到工作区子目录。"
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(),

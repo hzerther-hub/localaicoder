@@ -24,8 +24,10 @@
   .step.run{color:#8fd18f}
   .step.wait{color:#7b7c8a}
   .step.deny{color:#ff7b7b}
-  .statsbar{font-size:10.5px;color:#8a8b9a;padding:5px 12px;background:#0f1014;border-bottom:1px solid #1c1d28;white-space:nowrap;overflow-x:auto;display:none}
-  .statsbar.show{display:block}
+  .statsbar{display:none;flex-wrap:wrap;gap:2px 0;padding:5px 12px;background:#0f1014;border-bottom:1px solid #1c1d28;font-size:10.5px;color:#8a8b9a;align-items:center}
+  .statsbar.show{display:flex}
+  .statsbar .st{margin-right:12px;white-space:nowrap}
+  .statsbar .st:not(:last-child)::after{content:"|";color:#3a3b4a;margin-left:12px}
  #mode{font-size:11px;color:#7b7c8a;text-align:center;padding:6px;background:#0f1014}
  .sessname{font-size:12px;color:#aab0c4;padding:7px 14px;background:#12131a;border-bottom:1px solid #1c1d28;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
  #log{flex:1;overflow-y:auto;padding:16px 14px 8px;display:flex;flex-direction:column;gap:10px}
@@ -71,13 +73,7 @@
  <select id="proj"></select>
  <span id="run"></span>
 </header>
-<div class="hrow">
- <div class="ctl"><span>模型</span><select id="model"></select></div>
- <div class="ctl"><span>推理</span><select id="effort"></select></div>
- <div class="ctl"><span>权限</span><select id="modeSel"><option value="always">总是允许</option><option value="ask">询问</option><option value="readonly">只读</option></select></div>
-</div>
 <div id="sessName" class="sessname"></div>
-<div id="mode"></div>
 <div id="stats" class="statsbar"></div>
 <div id="drawer"><div class="panel" id="sessList"></div></div>
 <div id="log"><div class="empty">从左上选择一个会话开始</div></div>
@@ -146,7 +142,6 @@ function applyState(s){
  window.__ws=s.workspace||'';window.__branch=s.branch||'';try{compact=(s.compact&&{budget:Number(s.compact.budget)||0,window:Number(s.compact.window)||0})||compact}catch(e){}
 renderStats();
 runs=new Set(ALL.filter(x=>x.running).map(x=>x.id));
- $('mode').textContent='中继 '+D.slice(0,6)+'… · 权限 '+(s.mode||'')+(runs.size?' · '+runs.size+' 运行中':'');
   renderSteps(); // 状态刷新后重算步骤栏（含 runs 更新后，保证当前会话运行中能显示）
  try{$('modeSel').value=s.mode||'always'}catch(e){}
  const _cur=s.current||'';if(_cur&&_cur!==lastCurrent){lastCurrent=_cur;loadModels();}
@@ -164,7 +159,7 @@ function renderStats(){const el=$('stats');if(!el)return;const u=usage,t=total,c
  const comp=c.window>0?Math.min(100,(c.budget/c.window)*100).toFixed(0)+'%':'—';
  const ws=(window.__ws||'').split('/').filter(Boolean).slice(-2).join('/');
  const parts=['⌂ '+ws,'⎇ '+(window.__branch||'—'),'本次命中 '+turnHit,'平均命中 '+avgHit,'会话 tokens '+fmtN(t.total_tokens||0),'本次 tokens '+fmtN(u.total_tokens||0),'输出 '+fmtN(u.completion_tokens||0),'缓存 '+fmtN(u.cached_tokens||0),'本次费用 '+((u.cost_usd&&u.cost_usd>0)?('¥'+(u.cost_usd*7.2).toFixed(4)):'—'),'上下文 '+ctx,'压缩阈值 '+comp];
- el.innerHTML=parts.join('<i class="sep">|</i>');el.classList.add('show');}
+ el.innerHTML=parts.map(function(x){return '<span class="st">'+esc(x)+'</span>'}).join('');el.classList.add('show');}
 function renderSteps(){const el=$('steps');if(!el)return;if(!steps.length||!runs.has(sid)){el.classList.remove('show');return;}el.classList.add('show');
  const done=steps.filter(x=>x.status==='done').length;
  const head=done+'/'+steps.length+' · 运行中 · 第 '+round+' 轮';
@@ -193,25 +188,19 @@ async function openS(id,notify){
 }
 async function loadModels(){
  let d; try{ d=await req({type:'models'});}catch(e){d=null;}
- const sel=$('model');
+  const sel=$('model');if(!sel){return;} // 已去掉模型下拉，仅同步数据
  if(!d||!d.models||!d.models.length){ sel.innerHTML='<option value="">正在连接桌面…</option>'; fillEffort(null); return; }
  sel.innerHTML=d.models.map(x=>'<option value="'+esc(x.key)+'"'+(x.is_current?' selected':'')+'>'+esc(x.model_id||x.display_name)+(x.vision?' 👁':'')+(x.reasoning?' 🧠':'')+'</option>').join('');
  fillEffort(d.models.find(x=>x.is_current)||null);
 }
 function fillEffort(mi){
- const ef=$('effort');
+  const ef=$('effort');if(!ef){return;} // 已去掉推理下拉
  const choices=(mi&&mi.reasoning&&mi.reasoning_choices)?mi.reasoning_choices:[];
  ef.innerHTML=choices.length
    ? choices.map(c=>'<option value="'+esc(c)+'"'+((mi.reasoning_effort||'')===c?' selected':'')+'>'+esc(c===''?'默认':c)+'</option>').join('')
    : '<option value="">—</option>';
  if(mi&&mi.reasoning_effort)ef.value=mi.reasoning_effort;
 }
-$('model').onchange=async()=>{const k=$('model').value;try{await req({type:'model',key:k});}catch(e){}
- try{const d=await req({type:'models'});if(d)sel2models(d);}catch(e){}
- function sel2models(d){const s=$('model');s.innerHTML=d.models.map(x=>'<option value="'+esc(x.key)+'"'+(x.is_current?' selected':'')+'>'+esc(x.model_id||x.display_name)+'</option>').join('');fillEffort(d.models.find(x=>x.is_current)||null);}
-};
-$('effort').onchange=async()=>{const k=$('model').value,e=$('effort').value;try{await req({type:'effort',key:k,effort:e});}catch(e){}};
-$('modeSel').onchange=async()=>{const v=$('modeSel').value;try{await req({type:'mode',value:v});}catch(e){}};
 $('sessList').onclick=e=>{const act=e.target.closest('.s-act');
  if(act){const row=act.closest('.s');if(!row)return;const id=row.dataset.id;
   if(act.dataset.act==='del'){ if(confirm('删除该会话？')) req({type:'delete_session',id}).then(()=>loadState()); }

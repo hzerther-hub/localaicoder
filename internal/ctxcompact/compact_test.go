@@ -124,7 +124,8 @@ func TestEffectiveBudget(t *testing.T) {
 		t.Fatalf("gpulocal 兜底预算不符: %d", b)
 	}
 	small := &config.ModelConfig{Key: "x/m", ContextWindow: 8192}
-	if b := EffectiveBudget(small); b != 8192-(config.MaxTokens+1024) {
+	wantOut := 8192 / 4 // 2048，小于全局 256000，故取窗口/4
+	if b := EffectiveBudget(small); b != 8192-(wantOut+1024) {
 		t.Fatalf("小窗口预算不符: %d", b)
 	}
 }

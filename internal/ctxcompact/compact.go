@@ -167,9 +167,17 @@ func EffectiveBudget(model *config.ModelConfig) int {
 		win = model.ContextWindow
 		key = model.Key
 	}
+	// 输出预算 = 与 StreamChat 的 max_tokens 策略一致：
+	// 本地(gpulocal)钳到 16384；非本地有窗口时用 min(全局上限, 窗口/4)。
+	// 这样 margin 不会因模型窗口小于全局 MaxTokens 而把上下文预算算成负数
+	// （否则小窗口模型会每一轮都触发压缩）。
 	outMax := config.MaxTokens
 	if strings.HasPrefix(key, "gpulocal") {
 		outMax = 16384
+	} else if win > 0 {
+		if q := win / 4; q < outMax {
+			outMax = q
+		}
 	}
 	margin := outMax + 1024
 	if strings.HasPrefix(key, "gpulocal") {

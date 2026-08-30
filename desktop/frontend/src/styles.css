@@ -1070,6 +1070,8 @@ select option { background: var(--bg-panel); color: var(--text); }
 .mm-row.active { border-color: rgba(124, 108, 255, 0.4); background: var(--accent-soft); }
 .mm-row .mn { font-size: 13px; flex: 1; }
 .mm-row .cap { font-size: 10.5px; color: var(--text-faint); font-family: var(--mono); background: var(--bg-panel); padding: 2px 6px; border-radius: 6px; }
+.mm-row .cap .cap-edit { width: 50px; background: transparent; border: none; outline: none; color: var(--text-faint); font-family: var(--mono); font-size: 10.5px; text-align: right; padding: 0; }
+.mm-row .cap .cap-edit:focus { color: var(--text); }
 .mm-mini {
   width: 26px; height: 26px; border-radius: 6px; font-size: 12px; color: var(--text-faint);
   display: inline-grid; place-items: center;

@@ -22,6 +22,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"localai/internal/config"
+	"localai/internal/media"
 	"localai/internal/msg"
 	"localai/internal/sessions"
 	"localai/internal/tools"
@@ -199,9 +200,10 @@ func (m *mobileRelay) apiState(a *App, w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	mode := a.mode
+	sid := a.sessionID
 	a.mu.Unlock()
 	writeJSON(w, map[string]any{
-		"workspace": tools.GetWorkspace(), "mode": mode, "sessions": out,
+		"workspace": tools.GetWorkspace(), "mode": mode, "current_session": sid, "sessions": out,
 	})
 }
 
@@ -223,14 +225,99 @@ func (m *mobileRelay) apiMessages(a *App, w http.ResponseWriter, r *http.Request
 		if role != "user" && role != "assistant" {
 			continue
 		}
-		text := flattenText(mm)
-		if text == "" {
+		text, imgs := extractMsgContent(mm)
+		mmap := map[string]any{"role": role, "text": text}
+		if len(imgs) > 0 {
+			mmap["images"] = imgs
+		}
+		if text == "" && len(imgs) == 0 {
 			continue
 		}
-		msgs = append(msgs, map[string]any{"role": role, "text": text})
+		msgs = append(msgs, mmap)
 	}
 	writeJSON(w, map[string]any{"ok": true, "id": id, "title": s.Title,
 		"workspace": s.Workspace, "messages": msgs})
+}
+
+// extractMsgContent 取消息文本 + 图片 dataURL（手机端渲染图片用）。
+func extractMsgContent(mm msg.Msg) (string, []string) {
+	if c := msg.S(mm, "content"); c != "" {
+		return cutAttDump(c), nil
+	}
+	var text strings.Builder
+	var imgs []string
+	for _, p := range msg.L(mm, "content") {
+		pm, _ := p.(map[string]any)
+		if pm == nil {
+			continue
+		}
+		switch msg.S(pm, "type") {
+		case "text":
+			appendContentText(&text, msg.S(pm, "text"))
+		case "image_url":
+			if u := msg.S(msg.M(pm, "image_url"), "url"); u != "" {
+				imgs = append(imgs, media.ThumbDataURL(u, 480)) // 缩略图 base64（手机端解码显示）
+			}
+		}
+	}
+	return text.String(), imgs
+}
+
+// appendContentText 追加文本；附件内容转储（"📎 附件文件 … 内容：…"）只保留「📎 文件名」，丢弃正文。
+func appendContentText(b *strings.Builder, t string) {
+	if t == "" {
+		return
+	}
+	if name := attDumpName(t); name != "" {
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\U0001F4CE " + name)
+		return
+	}
+	if isAttContentDump(t) {
+		return // 其它附件说明（PDF/压缩包）也不作正文展示
+	}
+	b.WriteString(t)
+}
+
+// attDumpName 从 "📎 附件文件 <name> 内容：…" 提取文件名；不是这种格式返回空。
+func attDumpName(t string) string {
+	const prefix = "\U0001F4CE 附件文件 "
+	if !strings.HasPrefix(t, prefix) {
+		return ""
+	}
+	rest := t[len(prefix):]
+	name := rest
+	for _, sep := range []string{" 内容", "内容"} {
+		if i := strings.Index(rest, sep); i >= 0 {
+			name = rest[:i]
+			break
+		}
+	}
+	return strings.TrimSpace(name)
+}
+
+// cutAttDump 截断字符串 content 里"附件文件内容转储"之后的正文（只留用户输入部分）。
+func cutAttDump(s string) string {
+	markers := []string{"\U0001F4CE 附件文件", "[PDF 附件", "[压缩包附件", "\U0001F4CE 压缩包"}
+	for _, m := range markers {
+		if i := strings.Index(s, m); i >= 0 {
+			return strings.TrimRight(s[:i], "\n ")
+		}
+	}
+	return s
+}
+
+// isAttContentDump 是否 agent 附件分析产生的"附件内容转储"（消息里不该展示原文件内容，避免冗余/重复）。
+func isAttContentDump(s string) bool {
+	prefixes := []string{"\U0001F4CE 附件文件", "[PDF 附件", "[压缩包附件", "\U0001F4CE 压缩包"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // flattenText 取消息文本（content 为字符串或多模态 parts 数组）。
@@ -270,8 +357,11 @@ func ensureSessionWorkspace(a *App, ws string) {
 }
 
 // emitUserMessage 用户消息同步事件：桌面聊天区与手机页都以它渲染用户气泡。
-func emitUserMessage(a *App, sessionID, text string) {
+func emitUserMessage(a *App, sessionID, text string, imgs []string) {
 	ev := msg.Event{"type": "user_message", "sessionId": sessionID, "text": text}
+	if len(imgs) > 0 {
+		ev["images"] = imgs
+	}
 	if a.ctx != nil {
 		wailsruntime.EventsEmit(a.ctx, "agent:event", ev)
 	}
@@ -310,7 +400,7 @@ func (m *mobileRelay) apiSend(a *App, w http.ResponseWriter, r *http.Request) {
 	}
 	ensureSessionWorkspace(a, ws)
 	a.runner.SeedHistory(in.Session) // 续聊旧会话：内存历史为空时从 SQLite 播种
-	emitUserMessage(a, in.Session, in.Text)
+	emitUserMessage(a, in.Session, in.Text, nil)
 	if err := a.runner.Send(in.Session, *model, in.Text, nil, mode); err != nil {
 		writeJSON(w, map[string]any{"ok": false, "msg": "会话正在运行中，请稍候"})
 		return

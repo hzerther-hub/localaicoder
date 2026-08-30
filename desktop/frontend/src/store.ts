@@ -16,6 +16,7 @@ export interface ChatItem {
   text: string
   reasoning: string
   atts?: Attachment[]
+  imgs?: string[]   // 加载会话时从 image_url 提取的图片 dataURL（无本地路径时用）
   tool?: ToolBlock
 }
 
@@ -146,7 +147,13 @@ interface UIState {
 let nextId = 1
 const emptyUsage: Usage = { prompt: 0, completion: 0, total: 0, cached: 0, requests: 0, reasoning: 0, cost: 0, costTotal: 0 }
 
-export const useStore = create<UIState>((set, get) => ({
+export const useStore = create<UIState>((set, get) => {
+  const syncRunning = () => {
+    const st = get()
+    const isRun = (st.runs || []).some((r) => r.sessionId === st.sessionId)
+    set({ running: !!isRun, runningSessionId: isRun ? st.sessionId : '' })
+  }
+  return {
   product: { name: '', title: 'Local AI Studio', features: {} },
   lang: 'zh',
   prefs: null,
@@ -229,7 +236,7 @@ export const useStore = create<UIState>((set, get) => ({
       showEditor: product.features.editor !== false,
     })
     get().refreshSessions()
-    api.currentSession().then((id) => set({ sessionId: id }))
+    api.currentSession().then((id) => { set({ sessionId: id }); if (id) get().loadSession(id) })
     api.gitBranch().then((b) => set({ branch: b || '' }))
     api.getProjectTrash().then((list) => set({ trash: list || [] }))
     api.getCompactInfo().then((c) => { if (c) set({ compact: c }) })
@@ -325,11 +332,11 @@ export const useStore = create<UIState>((set, get) => ({
           break
         }
         case 'user_message': {
-          // 手机端发起的消息：桌面同一会话实时补上用户气泡
-          //（桌面自己发的已在 send() 里乐观渲染，文本一致则跳过防重复）
+          // 手机端发起的消息：桌面同一会话实时补上用户气泡。
+          // 桌面自己发的已在 send() 里乐观渲染，按文本去重（含带图广播回显）避免重复。
           const last = st.items[st.items.length - 1]
           if (last && last.kind === 'user' && last.text === e.text) break
-          set({ items: [...st.items, { id: nextId++, kind: 'user', text: e.text, reasoning: '' }] })
+          set({ items: [...st.items, { id: nextId++, kind: 'user', text: e.text, reasoning: '', imgs: e.images || undefined }] })
           break
         }
         case 'context_compact':
@@ -348,22 +355,21 @@ export const useStore = create<UIState>((set, get) => ({
     onEvent('run:started', (d) => {
       const sid = d?.sessionId || ''
       const st = get()
-      // 更新后台任务列表
+      // 更新后台任务列表（所有会话并发）
       const runs = (st.runs || []).filter((r) => r.sessionId !== sid)
       runs.push({ sessionId: sid, model: d?.model || '', paused: false, start: Date.now() })
-      set({ runs })
-      // 仅当启动的是当前会话时才进入 running 态
-      if (sid === st.sessionId || !sid) {
-        set({ running: true, runningSessionId: sid, turnStart: Date.now(), round: 0 })
-      }
+      // 仅当前会话启动时更新走表/轮次
+      set({ runs, turnStart: sid === st.sessionId ? Date.now() : st.turnStart, round: sid === st.sessionId ? 0 : st.round })
+      syncRunning()
     })
     onEvent('run:finished', (d) => {
       const finSid = d?.sessionId || get().sessionId
       const st = get()
       // 从后台任务列表移除该会话
       set({ runs: (st.runs || []).filter((r) => r.sessionId !== finSid) })
-      // 仅当前会话结束时才重置 running 态并结算统计
+      // 非当前会话结束：仅重算 running（可能解锁当前会话）+ 刷新列表
       if (finSid !== st.sessionId) {
+        syncRunning()
         get().refreshSessions()
         return
       }
@@ -372,7 +378,7 @@ export const useStore = create<UIState>((set, get) => ({
       // 会话累计输入/缓存（平均命中率）与费用同步累计。
       const durSec = st.turnStart > 0 ? (Date.now() - st.turnStart) / 1000 : 0
       set({
-        running: false, approval: null, steps: [], runningSessionId: '',
+        approval: null, steps: [],
         sessionTokens: st.sessionTokens + st.usage.total,
         sessionPrompt: st.sessionPrompt + st.usage.prompt,
         sessionCached: st.sessionCached + st.usage.cached,
@@ -381,6 +387,7 @@ export const useStore = create<UIState>((set, get) => ({
           ? Math.round(st.usage.completion / durSec)
           : 0,
       })
+      syncRunning()
       api.getUsage().then((u) => {
         set({ usage: {
           prompt: num(u.prompt_tokens), completion: num(u.completion_tokens),
@@ -401,6 +408,8 @@ export const useStore = create<UIState>((set, get) => ({
     onEvent('permission:changed', (m) => { if (m) set({ mode: m }) })
     // 手机端打开某会话 → 桌面跟随切换（id 不等于当前才切，避免自身循环）
     onEvent('session:opened', (id) => { if (id && id !== get().sessionId) get().loadSession(id) })
+    // 会话/项目结构变化（改名/删除/新建/切项目，含手机端触发）→ 桌面刷新侧栏
+    onEvent('sessions:changed', () => { get().refreshSessions() })
     onEvent('model:changed', (k) => {
       api.listModels().then((models) => set({ models, currentModel: k }))
       api.getCompactInfo().then((c) => { if (c) set({ compact: c }) })
@@ -428,6 +437,7 @@ export const useStore = create<UIState>((set, get) => ({
       items: [...get().items, {
         id: nextId++, kind: 'user', reasoning: '',
         text: text + (atts.length ? `\n\n📎 ${attPaths.join('  ')}` : ''),
+        atts: atts, // 挂上附件，让 ChatView 能把图片渲染成缩略图
       }],
       attachments: [],
       // 附件/识图计数（统计条用）+ 轮次
@@ -473,13 +483,24 @@ export const useStore = create<UIState>((set, get) => ({
 
   loadSession: (id) => {
     set({ sessionId: id, sessionStart: Date.now(), attSent: 0, visionSent: 0, steps: [], sessionTokens: 0, turnCount: 0, lastThroughput: 0, sessionPrompt: 0, sessionCached: 0, sessionCost: 0, usage: { ...emptyUsage } })
+    syncRunning() // 切换会话：重算是否运行中（该会话若在跑则提示，不锁编辑）
     api.loadSession(id).then((s) => {
       if (!s) return
       const items: ChatItem[] = []
       for (const m of s.messages || []) {
         if (m.role === 'user') {
-          const c = typeof m.content === 'string' ? m.content : (m.content || []).filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n')
-          if (c) items.push({ id: nextId++, kind: 'user', text: c, reasoning: '' })
+          const parts = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : (m.content || [])
+          const c = parts.filter((p: any) => p.type === 'text').map((p: any) => {
+            const t = String(p.text || '')
+            if (t.startsWith('📎 附件文件')) {
+              const rest = t.slice('📎 附件文件 '.length)
+              const name = ((rest.split(' 内容')[0] || rest.split('内容')[0] || '')).trim()
+              return name ? '📎 ' + name : ''
+            }
+            return t
+          }).filter(Boolean).join('\n')
+          const imgs = parts.filter((p: any) => p.type === 'image_url').map((p: any) => p.image_url?.url).filter(Boolean)
+          if (c || imgs.length) items.push({ id: nextId++, kind: 'user', text: c, reasoning: '', imgs: imgs as string[] })
         } else if (m.role === 'assistant' && m.content) {
           items.push({ id: nextId++, kind: 'assistant', text: m.content, reasoning: '' })
         }
@@ -570,7 +591,8 @@ export const useStore = create<UIState>((set, get) => ({
     api.setPrefs({ ...prefs, standalone: next })
     set({ prefs: { ...prefs, standalone: next } })
   },
-}))
+  }
+})
 
 function num(v: any): number {
   const n = Number(v)

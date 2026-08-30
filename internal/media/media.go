@@ -46,7 +46,7 @@ func Classify(path string) string {
 }
 
 // ImageToDataURL 读图片转 base64 data URL；超过 ATTACH_IMAGE_MAX_PIX 等比缩小
-//（仅 png/jpg 解码重编码，其余格式原样 base64）。失败返回错误。
+// （仅 png/jpg 解码重编码，其余格式原样 base64）。失败返回错误。
 func ImageToDataURL(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -95,6 +95,53 @@ func ImageToDataURL(path string) (string, error) {
 	}
 	mime := mimeOf(ext)
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+// ThumbDataURL 从图片 dataURL 生成等比缩略图 dataURL（最长边 ≤ maxPix；超过才缩放）。
+// 手机端只显示缩略图即可，用它大幅减小跨网传输体积。失败/已足够小则返回原 dataURL。
+func ThumbDataURL(dataURL string, maxPix int) string {
+	if maxPix <= 0 {
+		maxPix = 512
+	}
+	raw := dataURL
+	if i := strings.Index(raw, ","); i >= 0 {
+		raw = raw[i+1:]
+	}
+	raw = strings.TrimPrefix(raw, "data:")
+	if raw == "" {
+		return dataURL
+	}
+	dec, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return dataURL
+	}
+	img, _, err := image.Decode(bytes.NewReader(dec))
+	if err != nil {
+		return dataURL
+	}
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= maxPix && h <= maxPix {
+		return dataURL
+	}
+	var nw, nh int
+	if w >= h {
+		nw, nh = maxPix, int(float64(h)*float64(maxPix)/float64(w))
+	} else {
+		nw, nh = int(float64(w)*float64(maxPix)/float64(h)), maxPix
+	}
+	if nw < 1 {
+		nw = 1
+	}
+	if nh < 1 {
+		nh = 1
+	}
+	resized := nearestScale(img, nw, nh)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, resized); err != nil {
+		return dataURL
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
 func mimeOf(ext string) string {

@@ -10,9 +10,12 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +25,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"localai/internal/config"
+	"localai/internal/media"
 	"localai/internal/msg"
 	"localai/internal/sessions"
 	"localai/internal/tools"
@@ -295,10 +299,16 @@ func (a *App) openSessionFromPhone(id string) {
 	}
 }
 
-// broadcastSessions 会话/项目结构变化 → 广播给手机端刷新会话列表。
+// broadcastSessions 会话/项目结构变化 → 广播给手机端刷新会话列表，并通知桌面前端刷新侧栏。
 func broadcastSessions(a *App) {
-	if a != nil && a.runner != nil {
-		a.runner.fanout(msg.Event{"type": "sessions:changed"})
+	if a == nil {
+		return
+	}
+	if a.runner != nil {
+		a.runner.fanout(msg.Event{"type": "sessions:changed"}) // 手机端
+	}
+	if a.ctx != nil {
+		wailsruntime.EventsEmit(a.ctx, "sessions:changed", nil) // 桌面前端
 	}
 }
 
@@ -342,10 +352,109 @@ func (rc *relayClient) handleSend(a *App, in map[string]any) {
 	}
 	ensureSessionWorkspace(a, ws)
 	a.runner.SeedHistory(session)
-	emitUserMessage(a, session, text)
-	if err := a.runner.Send(session, *model, text, nil, mode); err != nil {
+	// 显示文本（广播）带 📎 附件名一次；传给 agent 的**原文**不带，避免 agent 消息内容里
+	// 同时出现"📎 附件名"与附件分析里的文件名 → 历史帧重复显示。
+	displayText := text
+	if label := phoneAttLabel(in); label != "" {
+		displayText += label
+	}
+	emitUserMessage(a, session, displayText, imgsOfAtts(in))
+	if err := a.runner.Send(session, *model, text, savePhoneUploads(in), mode); err != nil {
 		relayNotice(a, "会话正在运行中，请稍候")
 	}
+}
+
+// savePhoneUploads 保存手机上传的附件（dataURL）到工作区 media/，返回路径列表供 agent 使用。
+func savePhoneUploads(in map[string]any) []any {
+	ws := tools.GetWorkspace()
+	dir := filepath.Join(ws, "media")
+	_ = os.MkdirAll(dir, 0o755)
+	var out []any
+	for _, x := range msg.L(in, "atts") {
+		m, ok := x.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := msg.S(m, "name")
+		data := msg.S(m, "data")
+		if name == "" || data == "" {
+			continue
+		}
+		p, err := writeUpload(dir, name, data)
+		if err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// writeUpload 解析 dataURL→base64→写入文件（防目录穿越，文件名加时间戳）。
+func writeUpload(dir, name, data string) (string, error) {
+	raw := data
+	if i := strings.Index(raw, ","); i >= 0 {
+		raw = raw[i+1:]
+	}
+	dec, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return "", err
+	}
+	base := filepath.Base(name) // 防路径穿越
+	if base == "." || base == "/" || base == "" {
+		base = "upload.bin"
+	}
+	fn := fmt.Sprintf("%d-%s", time.Now().UnixNano(), base)
+	p := filepath.Join(dir, fn)
+	if err := os.WriteFile(p, dec, 0o644); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+// imgsOfPaths 从桌面端路径附件提取图片缩略图（SendMessage 广播带图，手机端实时显示）。
+func imgsOfPaths(attachments []any) []string {
+	var out []string
+	for _, at := range attachments {
+		if p, ok := at.(string); ok && media.Classify(p) == "image" {
+			if d, err := media.ImageToDataURL(p); err == nil {
+				out = append(out, media.ThumbDataURL(d, 480))
+			}
+		}
+	}
+	return out
+}
+
+// phoneAttLabel 手机端附件名标签（"📎 name1  name2"），非图片附件也能显示文件名。
+func phoneAttLabel(in map[string]any) string {
+	var names []string
+	for _, x := range msg.L(in, "atts") {
+		m, ok := x.(map[string]any)
+		if !ok {
+			continue
+		}
+		if n := msg.S(m, "name"); n != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return "\n\n\U0001F4CE " + strings.Join(names, "  ")
+}
+
+// imgsOfAtts 提取手机发送附件里的图片 dataURL 缩略图（user_message 广播带图，手机端实时渲染）。
+func imgsOfAtts(in map[string]any) []string {
+	var out []string
+	for _, x := range msg.L(in, "atts") {
+		m, ok := x.(map[string]any)
+		if !ok {
+			continue
+		}
+		d := msg.S(m, "data")
+		if strings.HasPrefix(d, "data:image") {
+			out = append(out, media.ThumbDataURL(d, 480))
+		}
+	}
+	return out
 }
 
 // relayNotice 向手机页广播提示。
@@ -360,7 +469,7 @@ func modelListPayload(a *App) map[string]any {
 	for _, mm := range a.ListModels() {
 		out = append(out, map[string]any{
 			"key": mm.Key, "model_id": mm.ModelID, "display_name": mm.DisplayName,
-			"is_current": mm.IsCurrent, "reasoning": mm.Reasoning,
+			"is_current": mm.IsCurrent, "reasoning": mm.Reasoning, "vision": mm.Vision,
 			"reasoning_effort": mm.ReasoningEffort, "reasoning_choices": mm.ReasoningChoices,
 		})
 	}
@@ -400,9 +509,11 @@ func relayState(a *App, rid any) map[string]any {
 	a.mu.Lock()
 	mode := a.mode
 	cur := a.modelKey
+	sid := a.sessionID
 	a.mu.Unlock()
 	return map[string]any{"type": "state", "rid": rid,
-		"workspace": tools.GetWorkspace(), "mode": mode, "current": cur, "sessions": out}
+		"workspace": tools.GetWorkspace(), "mode": mode, "current": cur,
+		"current_session": sid, "sessions": out}
 }
 
 // relayMessages 会话消息帧。
@@ -421,11 +532,15 @@ func relayMessages(id string, rid any) map[string]any {
 		if role != "user" && role != "assistant" {
 			continue
 		}
-		text := flattenText(mm)
-		if text == "" {
+		text, imgs := extractMsgContent(mm)
+		mmap := map[string]any{"role": role, "text": text}
+		if len(imgs) > 0 {
+			mmap["images"] = imgs
+		}
+		if text == "" && len(imgs) == 0 {
 			continue
 		}
-		msgs = append(msgs, map[string]any{"role": role, "text": text})
+		msgs = append(msgs, mmap)
 	}
 	return map[string]any{"type": "messages", "rid": rid, "id": id, "messages": msgs}
 }

@@ -14,8 +14,14 @@ async function runCommand(raw: string, st: ReturnType<typeof useStore.getState>)
   const [cmd, ...rest] = raw.slice(1).split(/\s+/)
   const arg = rest.join(' ')
   switch (cmd) {
+    case 'file': {
+      // 选择文件/图片加入附件，随下一条消息传给 agent 识别（图片走视觉、文件走路径）
+      const files = await api.pickFiles()
+      for (const f of files || []) st.addAttachment(f)
+      break
+    }
     case 'help':
-      st.notice('**斜杠命令**\n- `/new` 新会话 · `/clear` 清屏 · `/model` 模型\n- `/dir [路径]` 切目录 · `/permission` 权限 · `/context` 独立提问\n- `/index` 重建索引 · `/branch` 当前分支 · `/export` 导出会话\n- `/init` 生成 AGENTS.md · `/bug [范围]` 排查修复 BUG\n- `/kb` 知识库 · `/skills` 技能 · `/changes` 改动\n- `/mcp` MCP · `/dispatch` 派发 · `/cache` 缓存\n\n**其它前缀**\n- `@关键词` 文件补全（↑↓ 选择，Enter 插入路径）\n- `!命令` 直接在工作区执行（不经过模型）')
+      st.notice('**斜杠命令**\n- `/new` 新会话 · `/clear` 清屏 · `/model` 模型\n- `/file` 选文件/图片上传识别 · `/dir [路径]` 切目录 · `/permission` 权限 · `/context` 独立提问\n- `/index` 重建索引 · `/branch` 当前分支 · `/export` 导出会话\n- `/init` 生成 AGENTS.md · `/bug [范围]` 排查修复 BUG\n- `/kb` 知识库 · `/skills` 技能 · `/changes` 改动\n- `/mcp` MCP · `/dispatch` 派发 · `/cache` 缓存\n\n**其它前缀**\n- `@关键词` 文件补全（↑↓ 选择，Enter 插入路径）\n- `!命令` 直接在工作区执行（不经过模型）')
       break
     case 'bug': {
       // 对齐 Claude Code 式工作流：系统排查 bug → 修复 → 验证闭环
@@ -300,7 +306,8 @@ export default function Composer() {
 
         {text.startsWith('/') && !text.includes(' ') && (
           <div className="slash-hint">
-            <span><b>/help</b> 全部命令</span><span><b>/new</b> 新会话</span>
+            <span><b>/help</b> 全部命令</span><span><b>/file</b> 选文件/图片</span>
+            <span><b>/new</b> 新会话</span>
             <span><b>/model</b> 模型</span><span><b>/dir</b> 目录</span>
             <span><b>/init</b> 生成 AGENTS.md</span><span><b>/bug</b> 修 BUG</span>
             <span><b>/kb</b> 知识库</span><span><b>/skills</b> 技能</span>

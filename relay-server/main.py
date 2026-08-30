@@ -139,7 +139,8 @@ def main() -> None:
     load_config(args.config)
     host, port = parse_bind(CFG["listen"])
     log.info("relay-server 监听 %s:%d", host, port)
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    ws_max = int(os.environ.get("RELAY_WS_MAX", "5")) * 1024 * 1024  # 默认 5MB，防大图 base64 超限断连
+    uvicorn.run(app, host=host, port=port, log_level="warning", ws_max_size=ws_max)
 
 
 if __name__ == "__main__":

@@ -129,7 +129,7 @@ export default function EditorPanel() {
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; path: string; isDir: boolean } | null>(null)
   const [treeV, setTreeV] = useState(0)
   const running = useStore((s) => s.running)
-  const locked = running
+  const locked = false // 不再锁定编辑器（并发编辑）；仅用 running 做提示
   const readOnlyComp = useRef(new Compartment())
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -229,7 +229,7 @@ export default function EditorPanel() {
       autocompletion({ override: [lspSource] }),
       diagField,
       // AI 运行期间锁定手动编辑（write_file 由 agent 自动刷新标签）
-      readOnlyComp.current.of(EditorState.readOnly.of(running)),
+      readOnlyComp.current.of(EditorState.readOnly.of(false)),
       EditorView.theme({
         '.cm-diag': { textDecoration: 'underline wavy rgba(255,107,129,0.8)', textDecorationSkipInk: 'none' },
         '&': { color: '#e7eaf2' },
@@ -311,6 +311,26 @@ export default function EditorPanel() {
     }
   }, [locked])
 
+  // 运行中：周期重读当前活动标签，任何写入（write_file / run_shell）都同步到编辑器
+  useEffect(() => {
+    if (!running || !active) return
+    const id = setInterval(() => {
+      const path = activeRef.current
+      if (!path || !viewRef.current) return
+      api.readFileText(path).then((c) => {
+        if (c == null) return
+        const tab = tabsRef.current.find((x) => x.path === path)
+        if (tab && c !== tab.content) {
+          setTabs((p2) => p2.map((y) => (y.path === path ? { ...y, content: c, saved: c } : y)))
+          savedEditorStates.delete(path)
+          viewRef.current!.setState(createStateFor(path, c))
+          savedEditorStates.set(path, { state: viewRef.current!.state, scroll: 0 })
+        }
+      }).catch(() => {})
+    }, 1500)
+    return () => clearInterval(id)
+  }, [running, active])
+
   // agent write_file 完成 → 自动刷新打开的同路径标签（对齐 Tk _reload_editor_tab）
   useEffect(() => {
     return onEvent('agent:event', (e: any) => {
@@ -326,8 +346,15 @@ export default function EditorPanel() {
       setTabs((prev) => prev.map((x) => {
         const norm = (s: string) => s.replace(/\\/g, '/').toLowerCase()
         if (norm(x.path).endsWith(norm(written)) || norm(written).endsWith(norm(x.path))) {
-          api.readFileText(x.path).then((c) => ({ ...x, content: c, saved: c }))
-            .then((nx) => nx && setTabs((p2) => p2.map((y) => (y.path === x.path ? nx : y))))
+          api.readFileText(x.path).then((c) => {
+            setTabs((p2) => p2.map((y) => (y.path === x.path ? { ...y, content: c, saved: c } : y)))
+            // 同频编辑：若是当前活动标签，立即刷新编辑器视图
+            if (activeRef.current === x.path && viewRef.current) {
+              savedEditorStates.delete(x.path)
+              viewRef.current.setState(createStateFor(x.path, c))
+              savedEditorStates.set(x.path, { state: viewRef.current.state, scroll: 0 })
+            }
+          }).catch(() => {})
         }
         return x
       }))
@@ -491,8 +518,8 @@ ${r.output}`)
       {panelMin && (
         <button className="mini-restore" title={t('展开', 'Restore')} onClick={() => setPanelMin(false)}>📄</button>
       )}
-      {locked && (
-        <div className="ai-lock-banner">🤖 {t('AI 正在修改代码，编辑已锁定（运行结束后恢复）', 'AI is editing — editor locked until run finishes')}</div>
+      {running && (
+        <div className="ai-lock-banner">🤖 {t('AI 正在修改代码，可并行编辑（运行结束后同步）', 'AI is editing — you can keep editing; changes sync after the run')}</div>
       )}
       </div>
     </div>

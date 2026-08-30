@@ -56,7 +56,7 @@ type Agent struct {
 	OnEvent    func(msg.Event)                                             // 事件回调（12 种，见 agent.py 契约）
 	OnApproval func(name string, args map[string]any, summary string) bool // ask 模式审批
 	OnStop     func() bool                                                 // 返回 true 则中止循环
-	OnPause    func()                                                     // 暂停点：非阻塞协作，间隙调用
+	OnPause    func()                                                      // 暂停点：非阻塞协作，间隙调用
 	Mode       string
 	Model      *config.ModelConfig
 
@@ -612,7 +612,7 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 						"role": "assistant", "content": strings.Join(textCollected, ""),
 					})
 					messages = append(messages, msg.Msg{
-						"role": "user",
+						"role":    "user",
 						"content": fmt.Sprintf("任务尚未完成：步骤清单还有 %d 项未完成。请继续执行剩余步骤（开始某项置 in_progress、完成置 completed），不要总结、不要询问，直接继续动手。", pending),
 					})
 					nudgeCount++
@@ -682,7 +682,7 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 			}
 
 			a.emit(msg.Event{"type": "tool_start", "name": name, "args": args})
-			a.emit(msg.Event{"type": "tool_result", "name": name, "result": result})
+			a.emit(msg.Event{"type": "tool_result", "name": name, "result": result, "args": args})
 			messages = append(messages, msg.Msg{
 				"role": "tool", "tool_call_id": msg.S(tc, "id"), "content": result,
 			})

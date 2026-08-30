@@ -114,6 +114,14 @@ export default function ChatView() {
                         {imgs.map((p) => <MsgThumb key={p} path={p} />)}
                       </div>
                     )}
+                    {/* 加载历史会话时从 image_url 提取的图片（dataURL，无本地路径） */}
+                    {it.imgs && it.imgs.length > 0 && (
+                      <div className="msg-thumbs">
+                        {it.imgs.map((u: string, i: number) => (
+                          <img key={i} className="msg-thumb" src={u} alt="" onClick={() => useStore.getState().setPreviewSrc(u)} />
+                        ))}
+                      </div>
+                    )}
                     {others.length > 0 && (
                       <div className="msg-atts">📎 {others.join('　')}</div>
                     )}

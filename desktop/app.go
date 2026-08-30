@@ -528,12 +528,14 @@ func (a *App) NewSession() string {
 	if keep != "" {
 		_ = sessions.Save(keep, []msg.Msg{}, "新会话", ws, nil) // 标题归一
 		a.sessionID = keep
+		broadcastSessions(a)
 		return keep
 	}
 	// 懒创建：新会话只登记 ID、不立即落盘——切换项目/分组时不会再到处
 	// 留下空「新会话」；首次消息完成后由 runner.Save 真正入库。
 	id := sessions.NewID()
 	a.sessionID = id
+	broadcastSessions(a)
 	return id
 }
 
@@ -617,7 +619,11 @@ func (a *App) RenameSession(id, title string) bool {
 	if title == "" || title == "新会话" {
 		return false
 	}
-	return sessions.Rename(id, title)
+	ok := sessions.Rename(id, title)
+	if ok {
+		broadcastSessions(a) // 改名同步到手机端
+	}
+	return ok
 }
 
 // CurrentSession 当前会话 ID。
@@ -636,7 +642,11 @@ func (a *App) SendMessage(text string, attachments []any) error {
 		return fmt.Errorf("当前模型不可用: %s", a.modelKey)
 	}
 	// 用户消息事件：手机远程页与桌面聊天区以同一事件渲染用户气泡（双端同步）
+	// 带图片附件时同时注入缩略图，让手机端实时显示（对齐刷新后的历史渲染）
 	ev := msg.Event{"type": "user_message", "sessionId": sid, "text": text + attachmentLabels(attachments)}
+	if imgs := imgsOfPaths(attachments); len(imgs) > 0 {
+		ev["images"] = imgs
+	}
 	runtime.EventsEmit(a.ctx, "agent:event", ev)
 	a.runner.fanout(ev)
 	return a.runner.Send(sid, *model, text, attachments, mode)

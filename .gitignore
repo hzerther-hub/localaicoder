@@ -31,3 +31,8 @@ node_modules/
 Thumbs.db
 .DS_Store
 __pycache__/
+
+# opencode 远端（方案 A/B）机器级配置与本机数据（含 token，勿提交）
+.ocdata/
+/relay-server/config.json
+/relay-server/opencode_bridge.json

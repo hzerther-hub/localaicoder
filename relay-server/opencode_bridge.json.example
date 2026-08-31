@@ -1,0 +1,26 @@
+{
+  "relay": {
+    "server_url": "wss://yours.com",
+    "device_token": "请粘贴 64 位 device token（须与 relay-server 的 device_tokens 白名单一致）",
+    "workspace": "/home/wellfuture/build/localaicoder",
+    "mode": "always",
+    "insecure": false
+  },
+  "opencode": {
+    "base_url": "http://127.0.0.1:9001",
+    "default_model": "zhipuai-coding-plan/glm-5.3",
+    "password": ""
+  },
+  "_opencode_agent_permission_ref": {
+    "说明": "下面是让手机端 readonly/ask 真正拦住写/改所需的 opencode 自身配置。把它粘贴到 ~/.config/opencode/opencode.jsonc；此字段仅供参考，桥并不读取它（桥的配置只认 relay 与 opencode 两段）。",
+    "file": "~/.config/opencode/opencode.jsonc",
+    "jsonc": {
+      "$schema": "https://opencode.ai/config.json",
+      "permission": {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask"
+      }
+    }
+  }
+}

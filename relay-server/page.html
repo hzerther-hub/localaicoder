@@ -84,6 +84,14 @@ select:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
 .step.wait{color:var(--text-faint)}
 .step.deny{color:var(--danger)}
 
+/* ---------- permission approval (ask 模式) ---------- */
+#permBar{display:none;align-items:center;justify-content:space-between;gap:9px;flex-wrap:wrap;background:rgba(255,183,77,.13);border-bottom:1px solid rgba(255,183,77,.4);padding:9px 12px;font-size:12.5px;color:var(--text)}
+#permBar .perm-txt{flex:1 1 auto;min-width:0;font-family:var(--mono);font-size:12px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#permBar .perm-btns{flex:none;display:flex;gap:7px}
+#permBar button{flex:none;padding:7px 12px;font-size:12.5px;border-radius:9px;border:1px solid var(--border-2);background:var(--bg-2);color:var(--text);cursor:pointer}
+#permBar button:active{opacity:.7}
+#permBar button[data-p="deny"]{color:var(--danger);border-color:rgba(255,107,128,.4)}
+
 /* ---------- telemetry (stats) · collapsible ---------- */
 .statsbar-wrap{display:none;align-items:center;gap:4px;padding:5px 6px 5px 13px;background:#0c111a;border-bottom:1px solid var(--border)}
 .statsbar-wrap.on{display:flex}
@@ -164,6 +172,7 @@ form button:active{transform:translateY(1px)}
 <div id="statsBar" class="statsbar-wrap"><div id="stats" class="statsbar"></div><button id="statsToggle" type="button" aria-label="展开用量详情">▸</button></div>
 <div id="qc"><span data-p="列出当前项目的目录结构">列目录</span><span data-p="分析这个项目，找出可能的 BUG 并给出修复">找 BUG</span><span data-p="为最近的代码改动补充单元测试">写测试</span><span data-p="分析当前代码，给出重构建议">重构建议</span></div>
 <div id="pendingAtts"></div>
+<div id="permBar"><span class="perm-txt" id="permTxt">权限请求</span><span class="perm-btns"><button type="button" data-p="deny">拒绝</button><button type="button" data-p="allow">允许一次</button><button type="button" data-p="always">总是允许</button></span></div>
 <form id="f"><input id="i" placeholder="发消息…" autocomplete="off"><button>发送</button></form>
 <input type="file" id="fileAny" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0">
 <script>
@@ -172,7 +181,7 @@ const D=new URLSearchParams(location.search).get('d');
 const WS=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/s/ws?d='+D;
 const $=id=>document.getElementById(id);
 const log=$('log');
-let ALL=[],wsCur='',sid='',runs=new Set(),cur=null,ws,rid=0,lastCurrent='',openSeq=0;
+let ALL=[],wsCur='',sid='',runs=new Set(),cur=null,ws,rid=0,lastCurrent='',openSeq=0,permId=null,permSid='';
 const pend={};
 const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML;};
 const ago=ts=>{const d=Date.now()/1000-ts;if(d<60)return '刚刚';if(d<3600)return Math.floor(d/60)+'分';if(d<86400)return Math.floor(d/3600)+'时';return Math.floor(d/86400)+'天';};
@@ -190,6 +199,7 @@ function connect(){
  ws=new WebSocket(WS);
  ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(_){return}
   if(m.rid&&pend[m.rid]){pend[m.rid](m);delete pend[m.rid];return}
+  if(m.type==='permission_request'){permId=m.id;permSid=m.sessionID;const f=m.metadata&&m.metadata.filepath?(' '+m.metadata.filepath):'';const pats=(m.patterns&&m.patterns.length)?(' '+m.patterns.join(' ')):'';$('permTxt').textContent='请求权限 · '+(m.permission||'tool')+f+pats;$('permBar').style.display='flex';return;}
   if(m.sessionId&&sid&&m.sessionId!==sid)return;
   if(m.type==='user_message'){const d=add('user',m.text);addMsgImgs(d,m.images);cur=null;}
   else if(m.type==='text'){if(!cur)cur=add('ai','');cur.textContent+=m.delta;log.scrollTop=log.scrollHeight;}
@@ -300,6 +310,7 @@ $('sessList').onclick=e=>{const act=e.target.closest('.s-act');
   return; }
  const r=e.target.closest('.s');if(r)openS(r.dataset.id,true);};
 $('btnS').onclick=()=>{$('drawer').classList.toggle('open');if($('drawer').classList.contains('open'))loadState();};
+$('permBar').onclick=e=>{const b=e.target.closest('button');if(!b||!permId)return;const v=b.dataset.p;try{ws.send(JSON.stringify({type:'permission_response',id:permId,response:v,sessionID:permSid}));}catch(_){}permId=null;$('permBar').style.display='none';};
 $('drawer').onclick=e=>{if(e.target.id==='drawer')$('drawer').classList.remove('open')};
 $('proj').onchange=()=>{wsCur=$('proj').value;renderSess();};
 $('qc').onclick=e=>{const b=e.target.closest('[data-p]');if(!b)return;const i=$('i');i.value=(i.value?i.value+'\n':'')+b.dataset.p;i.focus();};

@@ -52,12 +52,11 @@ function applyState(s){
  const map={};ALL.forEach(x=>{const k=x.workspace||'';(map[k]=map[k]||{n:0,u:0}).n++;map[k].u=Math.max(map[k].u,x.updated)});
  // 保证当前项目总是出现在下拉（即使还没会话，新建项目也能看到）
  const w0=s.workspace||'';if(w0&&!map[w0])map[w0]={n:0,u:0};
- const sel=$('proj');const keep=wsCur||s.workspace;
+ const sel=$('proj');const keep=s.workspace||wsCur;
  sel.innerHTML=Object.keys(map).sort((a,b)=>map[b].u-map[a].u).map(w=>'<option value="'+esc(w)+'">'+esc(w.split('/').filter(Boolean).pop()||w)+' ('+map[w].n+')</option>').join('');
- wsCur=map[keep]?keep:(sel.options[0]?sel.options[0].value:'');
- // 跟随 PC 端切换项目：网页下拉只是本地过滤，s.workspace 变化只可能来自桌面端
- if(s.workspace&&window.__ws&&s.workspace!==window.__ws)wsCur=s.workspace;
- sel.value=wsCur;
+ // 顶部项目始终镜像实际工作区（与底部状态栏同源）：桥是单工作区，
+ // 会话可跨项目续用，会话里存的 directory 只代表创建地、会过期
+ wsCur=map[keep]?keep:(sel.options[0]?sel.options[0].value:'');sel.value=wsCur;
  window.__ws=s.workspace||'';window.__branch=s.branch||'';try{compact=(s.compact&&{budget:Number(s.compact.budget)||0,window:Number(s.compact.window)||0})||compact}catch(e){}
 renderStats();
 runs=new Set(ALL.filter(x=>x.running).map(x=>x.id));
@@ -96,11 +95,12 @@ function renderSess(){
 }
 function badge(){const c=$('conn');if(c)c.classList.toggle('working',runs.size>0);$('run').textContent=runs.size?'▶ '+runs.size:'';}
 function mark(id,on){ALL.forEach(x=>{if(x.id===id)x.running=on});renderSess();}
-// 顶部项目下拉同步到会话所属工作区（跟随 PC 端跨项目切换的会话）
-function syncProj(w){w=w||'';if(w===wsCur)return;wsCur=w;const sel=$('proj');for(const o of sel.options){if(o.value===w){sel.value=w;break;}}renderSess();}
+// 顶部项目下拉同步到指定工作区
+function syncProj(w){w=w||'';if(!w||w===wsCur)return;wsCur=w;const sel=$('proj');for(const o of sel.options){if(o.value===w){sel.value=w;break;}}renderSess();}
 async function openS(id,notify){
  const seq=++openSeq;
- const sx=ALL.find(x=>x.id===id);if(sx)syncProj(sx.workspace||'');
+ // 会话统一在实际工作区运行：顶部以实际工作区为准（会话存的 directory 只代表创建地）
+ const sx=ALL.find(x=>x.id===id);syncProj(window.__ws||(sx&&sx.workspace)||'');
  sid=id;$('drawer').classList.remove('open');log.innerHTML='';cur=null;renderSess();
  setSessName();
  if(notify){try{ws.send(JSON.stringify({type:'open_session',id}))}catch(e){}}

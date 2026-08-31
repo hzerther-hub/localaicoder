@@ -414,6 +414,13 @@ class Bridge:
             elif t == "permission_response":
                 # 手机对 ask 权限的审批结果：allow/deny/always -> once/reject/always
                 await self._respond_phone_permission(frame)
+            elif t == "dir_list":
+                # 手机端目录浏览：列出 path 下的子目录（按目录作用域调 /file，任意绝对路径可浏览）
+                p = (frame.get("path") or self.workspace or "/").rstrip("/") or "/"
+                await self._send(await self._dir_list(p, rid))
+            elif t == "new_session":
+                # 在指定目录新建会话（手机端选子目录后一键开聊）
+                await self._new_session((frame.get("dir") or "").strip(), rid)
         except Exception as e:
             log(f"处理 {t} 失败: {e}")
             traceback.print_exc()
@@ -421,6 +428,47 @@ class Bridge:
 
     async def _session_list(self):
         return await asyncio.to_thread(self.oc.get, "/session")
+
+    async def _dir_list(self, path, rid):
+        """列出 path 下的子目录。/file 按目录作用域调用，任意绝对路径均可浏览；
+        失败（如非项目目录）时回空列表并带 error，前端提示可直接粘贴路径。"""
+        url = f"/file?path={quote(path)}&directory={quote(path)}"
+        try:
+            nodes = await asyncio.to_thread(self.oc.get, url)
+            dirs = [
+                {"name": n.get("name"), "path": n.get("absolute") or (path.rstrip("/") + "/" + n.get("name", ""))}
+                for n in nodes
+                if isinstance(n, dict) and n.get("type") == "directory" and n.get("name")
+            ]
+            dirs = [d for d in dirs if not d["name"].startswith(".")]
+            dirs.sort(key=lambda d: d["name"].lower())
+            return {"type": "dir_list", "rid": rid, "path": path, "dirs": dirs}
+        except Exception as e:
+            return {"type": "dir_list", "rid": rid, "path": path, "dirs": [],
+                    "error": f"该目录无法浏览（可直接粘贴路径新建会话）：{e}"}
+
+    async def _new_session(self, directory, rid):
+        """在 directory 下新建会话并切换过去：POST /session?directory=…（按目录作用域）。"""
+        directory = (directory or "").strip().rstrip("/") or "/"
+        if not os.path.isdir(directory):
+            await self._send({"type": "error", "delta": f"目录不存在：{directory}", "rid": rid})
+            return
+        try:
+            s = await asyncio.to_thread(
+                self.oc.post, scoped("/session", directory),
+                {"title": os.path.basename(directory) or "新会话"})
+            sid = (s or {}).get("id")
+            self._dir_by_sid[sid] = directory
+            self.workspace = directory
+            self.current = sid
+            log(f"新建会话 {sid} @ {directory}")
+            await self._send({"type": "new_session", "rid": rid, "ok": True,
+                              "session": sid, "dir": directory})
+            await self._send({"type": "session:opened", "id": sid})
+            await self._send({"type": "sessions:changed"})
+        except Exception as e:
+            log(f"新建会话失败 @ {directory}: {e}")
+            await self._send({"type": "error", "delta": f"新建会话失败：{e}", "rid": rid})
 
     def _model_obj(self):
         """把 'providerID/modelID' 字符串转成 opencode 期望的 model 对象。"""

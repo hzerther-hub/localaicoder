@@ -38,12 +38,19 @@
   <!-- 当前会话名 -->
   <div id="sessName" class="sessname"></div>
 
-  <!-- 会话抽屉（顶部：项目同步方向配置） -->
+  <!-- 会话抽屉（顶部：项目同步方向配置 + 工作目录浏览） -->
   <div id="drawer"><div class="panel">
     <div id="syncRow"><span>项目同步</span><select id="syncSel">
       <option value="pc2m">跟随 PC</option>
       <option value="m2pc">控制 PC</option>
     </select></div>
+    <div id="dirBox">
+      <div class="gr">工作目录</div>
+      <div id="dirNow" class="dir-now">📂 …</div>
+      <div id="dirList" class="dir-list"></div>
+      <div class="dir-row"><input id="dirInput" placeholder="粘贴绝对路径回车进入" autocomplete="off" spellcheck="false"><button id="dirGo" type="button">进入</button></div>
+      <button id="dirNew" type="button" class="dir-new">📁 在此目录新建会话</button>
+    </div>
     <div id="sessList"></div>
   </div></div>
 

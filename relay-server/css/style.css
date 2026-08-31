@@ -196,3 +196,18 @@ body.coding #steps,body.coding #statsBar,body.coding #qc{display:none!important}
   #conn.working{animation:none}
   *{transition-duration:.01ms!important}
 }
+
+/* ---------- 工作目录浏览（选子目录） ---------- */
+#dirBox{margin:2px 0 4px}
+.dir-now{font-family:var(--mono);font-size:11px;color:var(--signal);background:var(--bg-2);border:1px solid var(--border-2);border-radius:8px;padding:7px 9px;margin:0 0 7px;word-break:break-all;line-height:1.45}
+.dir-list{max-height:172px;overflow-y:auto;border:1px solid var(--border-2);border-radius:10px;background:var(--bg-2);margin-bottom:8px}
+.dir-item{padding:9px 11px;font-size:12.5px;color:var(--text);border-bottom:1px solid var(--border);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dir-item:last-child{border-bottom:0}
+.dir-item:active{background:var(--bg-3)}
+.dir-item.up{color:var(--text-dim)}
+.dir-row{display:flex;gap:6px;margin-bottom:8px}
+.dir-row input{flex:1;min-width:0;font-family:var(--mono);font-size:11px;color:var(--text);background:var(--bg-2);border:1px solid var(--border-2);border-radius:9px;padding:8px 10px;outline:none}
+.dir-row input:focus{border-color:var(--signal)}
+.dir-row button{flex:none;padding:8px 13px;font-size:12px;border-radius:9px;border:1px solid var(--border-2);background:var(--bg-2);color:var(--text);cursor:pointer}
+.dir-new{width:100%;padding:10px;font-size:12.5px;font-weight:600;border-radius:10px;border:1px solid rgba(55,213,195,.4);background:rgba(55,213,195,.1);color:var(--signal);cursor:pointer;margin-bottom:6px}
+.dir-new:active{opacity:.7}

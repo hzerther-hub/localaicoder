@@ -150,7 +150,29 @@ $('sessList').onclick=e=>{const act=e.target.closest('.s-act');
   else if(act.dataset.act==='rename'){ const nm=prompt('新标题',''); if(nm&&nm.trim()) req({type:'rename_session',id,title:nm.trim()}).then(()=>loadState()); }
   return; }
  const r=e.target.closest('.s');if(r)openS(r.dataset.id,true);};
-$('btnS').onclick=()=>{$('drawer').classList.toggle('open');if($('drawer').classList.contains('open'))loadState();};
+$('btnS').onclick=()=>{$('drawer').classList.toggle('open');if($('drawer').classList.contains('open')){loadState();reqDir(window.__ws||wsCur||'/');}};
+// ---- 工作目录浏览：列子目录→下钻→在该目录新建会话（桥: dir_list / new_session） ----
+let dirCur='';
+function renderDir(m){
+ if(!m||m.type!=='dir_list')return;
+ dirCur=m.path||dirCur;
+ $('dirNow').textContent='📂 '+dirCur;$('dirInput').value=dirCur;
+ const up=dirCur.replace(/\/+$/,'').replace(/\/[^/]*$/,'')||'/';
+ let h='<div class="dir-item up" data-p="'+esc(up)+'">↑ 上级</div>';
+ h+=(m.dirs||[]).map(d=>'<div class="dir-item" data-p="'+esc(d.path)+'">'+esc(d.name)+'</div>').join('');
+ if(m.error)h+='<div class="gr">'+esc(m.error)+'</div>';
+ else if(!(m.dirs||[]).length)h+='<div class="gr">（无子目录）</div>';
+ $('dirList').innerHTML=h;
+}
+function reqDir(p){p=(p||'').trim();if(!p)return;req({type:'dir_list',path:p}).then(renderDir).catch(()=>{});}
+$('dirGo').onclick=()=>{const v=$('dirInput').value.trim();if(v)reqDir(v);};
+$('dirInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('dirGo').click();}});
+$('dirList').onclick=e=>{const it=e.target.closest('.dir-item');if(!it)return;reqDir(it.dataset.p);};
+$('dirNew').onclick=async()=>{
+ const p=($('dirInput').value.trim()||dirCur);if(!p)return;
+ try{const m=await req({type:'new_session',dir:p});if(m&&m.ok===false&&m.error)add('err',m.error);}
+ catch(e){add('err','新建失败');}
+};
 $('permBar').onclick=e=>{const b=e.target.closest('button');if(!b||!permId)return;const v=b.dataset.p;try{ws.send(JSON.stringify({type:'permission_response',id:permId,response:v,sessionID:permSid}));}catch(_){}permId=null;$('permBar').style.display='none';};
 $('drawer').onclick=e=>{if(e.target.id==='drawer')$('drawer').classList.remove('open')};
 // ---- 美化下拉：原生 select 隐藏为数据源，套自定义按钮+弹层（onchange 逻辑不变） ----

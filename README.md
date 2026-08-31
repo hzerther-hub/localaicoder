@@ -27,9 +27,9 @@
 - **双向同步**：模型/推理等级/权限、会话改名/删除/新建、当前打开会话（刷新互相跟随）、会话/项目增删均桌面↔手机同源。
 - 手机控制台：项目/会话列表（改名/删除）、运行标记、模型/推理/权限选择、`/` 斜杠命令、任务步骤栏（`任务步骤 N · 运行中 · 第 X 轮`）、用量状态栏（工作目录/分支/命中/tokens/费用/上下文/压缩阈值）、图片缩略图、`/file` 选文件/图片上传识别（图片压缩降尺寸、base64 传 PC）。
 - **局域网移动端**（`desktop/mobile.go`）：手机连本机 `mobileStart` 起的本地页，功能大致同远程页。
-- **也支持远程驱动 opencode**：`relay-server/opencode_bridge.py` 把手机控制台接到 `opencode serve`
-  （方案 A 走中继端口 8999，保留 page.html；方案 B 直接用 opencode 自带 web/serve 端口 9001）。
-  架构、配置与用法见 `relay-server/README-opencode.md`；起停用 `scripts/opencode-remote.sh`。
+- **也支持远程驱动 opencode**：`opencode-relay/`（独立目录，中继代码自包含、不复用 `relay-server/`）把手机控制台接到 `opencode serve`
+  （方案 A 走中继端口 8999；方案 B 直接用 opencode 自带 web/serve 端口 9001）。
+  架构、配置与用法见 `opencode-relay/README-opencode.md`；起停用 `scripts/opencode-remote.sh`。
 
 ### 并发与编辑
 - **并发聊天/编程**：不同会话可同时后台运行（`runs` 列表），切换会话不阻塞；`running` 按会话实时派生。
@@ -55,6 +55,7 @@ internal/           内核包（agent/llm/tools/mcp/lsp/config/cache/sessions/co
 desktop/            独立 Go 模块：Wails 桌面（app/runner/term/shot/relay/mobile/feishu/telegram/wecom/schedule）
 desktop/frontend/   React + TS + Vite 界面
 relay-server/       FastAPI 手机远程中继（哑管道；page.html 手机控制台；generate_guide.py 生成部署指引）
+opencode-relay/     opencode 远程控制（自包含中继副本 + opencode_bridge.py 协议翻译桥）
 products/           产品 profile（devtool_local/devtool/novelwriter/quant/devrag）
 docs/relay/         远程架构/协议/部署文档
 ```

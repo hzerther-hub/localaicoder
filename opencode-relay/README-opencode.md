@@ -8,7 +8,7 @@
 ## 一、架构总览
 
 ```
-┌────────── 手机浏览器 ──────────┐        ┌────── 中继服务器(relay-server) ──────┐
+┌────────── 手机浏览器 ──────────┐        ┌────── 中继服务器(opencode-relay) ──────┐
 │ 方案A：page.html 控制台        │        │  FastAPI 哑管道，只按 device_token 路由 │
 │ 方案B：opencode 自带 web 客户端 │        │   . 静态页 GET /s/?d=<token>        │
 └───────────┬───────────────────┘        │   . 手机WS  /s/ws?d=<token>          │
@@ -29,25 +29,25 @@
 
 ## 二、方案 A（保留自己的手机控制台，端口 8999）
 
-手机页还是 `relay-server/page.html`，中继还是哑管道，只是把"客户端"换成
+手机页还是 `opencode-relay/page.html`，中继还是哑管道，只是把"客户端"换成
 `opencode_bridge.py`，它把 Local AI Studio 的协议翻译成 opencode 的 HTTP API。
 
 ### 组件与角色
 
 | 组件 | 端口 | 说明 |
 |---|---|---|
-| `relay-server/main.py` | 8999 | 哑管道：`device_token` 白名单 + 双向转发 JSON 帧 |
-| `relay-server/opencode_bridge.py` | —— | 桥：连 `/client`，把 `send/state/messages/models/...` 映射到 opencode HTTP + `/event` SSE |
-| `relay-server/page.html` | 由 main.py 提供 | 手机控制台（不改动） |
+| `opencode-relay/main.py` | 8999 | 哑管道：`device_token` 白名单 + 双向转发 JSON 帧 |
+| `opencode-relay/opencode_bridge.py` | —— | 桥：连 `/client`，把 `send/state/messages/models/...` 映射到 opencode HTTP + `/event` SSE |
+| `opencode-relay/page.html` | 由 main.py 提供 | 手机控制台（不改动） |
 | `opencode serve` | 9001 | 真正干活的后端（方案 A、B 共用） |
 
 ### 配置
 
-1. `relay-server/config.json`（已 gitignore）：
+1. `opencode-relay/config.json`（已 gitignore）：
    ```json
    { "listen": "127.0.0.1:8999", "device_tokens": ["<64位token 或测试用 testtoken123>"] }
    ```
-2. `relay-server/opencode_bridge.json`（已 gitignore）：
+2. `opencode-relay/opencode_bridge.json`（已 gitignore）：
    ```json
    {
      "relay":   { "server_url": "ws://127.0.0.1:8999", "device_token": "testtoken123",
@@ -79,8 +79,8 @@
 scripts/opencode-remote.sh start      # 起 9001 + 8999 + 桥
 # 或分别：
 opencode serve --hostname 127.0.0.1 --port 9001          # 在项目目录下跑
-cd relay-server && python3 main.py -config config.json   # 8999
-python3 relay-server/opencode_bridge.py --config relay-server/opencode_bridge.json
+cd opencode-relay && python3 main.py -config config.json   # 8999
+python3 opencode-relay/opencode_bridge.py --config opencode-relay/opencode_bridge.json
 ```
 
 手机打开 `http://127.0.0.1:8999/s/?d=testtoken123`（本地）或 `https://你的域名/s/?d=<token>`（公网，配 Caddy）。
@@ -139,7 +139,7 @@ opencode 在需要审批时发 `permission.asked`（含 `id`/`sessionID`/`permis
 |---|---|---|---|
 | ① AI 模型账号 | provider API key | `~/.local/share/opencode/auth.json` / opencode 配置 | 调模型用的，你已配好，本机测试不用管 |
 | ② opencode 服务密码 | `OPENCODE_SERVER_PASSWORD` | 启动 `opencode serve` 的环境变量 + 桥的 `opencode.password` | 保护 opencode 的 HTTP API/web。**不设=无鉴权**（仅限本地 `127.0.0.1`）；**公网/手机访问必须设**。客户端用 **HTTP Basic 认证**：用户名固定 `opencode`，密码=该值 |
-| ③ 中继 device_token | `device_tokens` / `d=` | `relay-server/config.json` + 手机 URL `?d=` | 手机页的"口令"，本机测试用 `testtoken123`；token 即控制权 |
+| ③ 中继 device_token | `device_tokens` / `d=` | `opencode-relay/config.json` + 手机 URL `?d=` | 手机页的"口令"，本机测试用 `testtoken123`；token 即控制权 |
 
 - **本机测试**：三者都不用额外配置——`opencode serve` 不设密码（只监听 127.0.0.1 安全），
   中继用 `testtoken123`，模型 key 已就绪。直接跑即可。
@@ -186,11 +186,11 @@ opencode web --port 9001
 
 | 文件 | 作用 |
 |---|---|
-| `relay-server/opencode_bridge.py` | 方案 A 桥（协议翻译） |
-| `relay-server/config.8999.example.json` | 中继 8999 配置示例 |
-| `relay-server/opencode_bridge.json.example` | 桥配置示例 |
+| `opencode-relay/opencode_bridge.py` | 方案 A 桥（协议翻译） |
+| `opencode-relay/config.json.example` | 中继 8999 配置示例 |
+| `opencode-relay/opencode_bridge.json.example` | 桥配置示例 |
 | `scripts/opencode-remote.sh` | 一键起停（serve/relay/bridge） |
-| `relay-server/config.json`、`opencode_bridge.json` | 本机配置（已 gitignore） |
+| `opencode-relay/config.json`、`opencode_bridge.json` | 本机配置（已 gitignore） |
 
 ## 六、常见故障
 

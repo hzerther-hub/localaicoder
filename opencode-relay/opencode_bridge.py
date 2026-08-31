@@ -3,10 +3,10 @@
 """
 opencode 中继桥（方案 A）：
 
-把本地 AI Studio 的手机控制台页面（relay-server/page.html）连到 opencode serve，
+把本地 AI Studio 的手机控制台页面（opencode-relay/page.html）连到 opencode serve，
 让手机像原来控制本地 Agent 一样控制 opencode 干活。
 
-                       ┌─ relay-server（FastAPI, 哑管道） ─┐
+                       ┌─ opencode-relay（FastAPI, 哑管道） ─┐
   手机浏览器(page.html) ──WS /s/ws ──>  [按 device_token 路由] ──WS /client──> 本脚本(桥)
                                           │                                    │
                                           │                          调用 opencode HTTP API

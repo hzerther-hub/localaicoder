@@ -3,7 +3,7 @@
 # opencode 远端一键起停（方案 A + B 的组合入口）
 #
 #   方案 A（自建中继 + 桥，端口 8999）：
-#       手机页 page.html <-> relay-server(8999) <-> opencode_bridge <-> opencode serve(9001)
+#       手机页 page.html <-> opencode-relay(8999) <-> opencode_bridge <-> opencode serve(9001)
 #   方案 B（opencode 自身 web/serve，端口 9001）：
 #       直接用 opencode 自带的 HTTP API/OpenAI web 客户端，手机经公网 TLS 访问
 #
@@ -12,7 +12,7 @@
 #   scripts/opencode-remote.sh stop             # 停全部
 #   scripts/opencode-remote.sh status           # 看各端口与进程
 #   scripts/opencode-remote.sh serve            # 只起 opencode serve(9001)
-#   scripts/opencode-remote.sh relay            # 只起 relay-server(8999)
+#   scripts/opencode-remote.sh relay            # 只起 opencode-relay(8999)
 #   scripts/opencode-remote.sh bridge           # 只起 桥
 #
 # 依赖：
@@ -50,11 +50,11 @@ start_serve() {
 
 start_relay() {
   if curl -sf "http://127.0.0.1:$RELAY_PORT/s/?d=${RELAY_TOKEN}" >/dev/null 2>&1; then
-    echo "relay-server 已在 $RELAY_PORT"
+    echo "opencode-relay 已在 $RELAY_PORT"
   else
-    ( cd "$ROOT/relay-server" && nohup python3 main.py -config config.json \
+    ( cd "$ROOT/opencode-relay" && nohup python3 main.py -config config.json \
         > "$STATE_DIR/relay.log" 2>&1 & echo $! > "$STATE_DIR/relay.pid" )
-    echo "relay-server -> http://127.0.0.1:$RELAY_PORT  (日志 .ocdata/relay.log)"
+    echo "opencode-relay -> http://127.0.0.1:$RELAY_PORT  (日志 .ocdata/relay.log)"
   fi
 }
 
@@ -66,7 +66,7 @@ start_bridge() {
     # 进而让手机页 WebSocket 报 code 1006。只保留一个桥。
     pkill -f "opencode_bridge.py" 2>/dev/null || true
     sleep 0.3
-    ( cd "$ROOT/relay-server" && nohup python3 opencode_bridge.py --config opencode_bridge.json \
+    ( cd "$ROOT/opencode-relay" && nohup python3 opencode_bridge.py --config opencode_bridge.json \
         > "$STATE_DIR/bridge.log" 2>&1 & echo $! > "$STATE_DIR/bridge.pid" )
     echo "opencode 桥已启动  (日志 .ocdata/bridge.log)"
   fi
@@ -87,7 +87,7 @@ stop_all() {
 status() {
   echo "== opencode serve :$OPENCODE_PORT =="
   curl -sf "http://127.0.0.1:$OPENCODE_PORT/global/health" && echo "  (健康)" || echo "  (未运行)"
-  echo "== relay-server :$RELAY_PORT =="
+  echo "== opencode-relay :$RELAY_PORT =="
   curl -sf -o /dev/null -w "  手机页 token 校验 http=%{http_code}\n" "http://127.0.0.1:$RELAY_PORT/s/?d=${RELAY_TOKEN}" || echo "  (未运行)"
   echo "== bridge =="
   local bp=$(read_pid bridge); [ -n "$bp" ] && alive "$bp" && echo "  运行中 (pid $bp)" || echo "  (未运行)"

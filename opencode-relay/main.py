@@ -1,11 +1,15 @@
-# Local AI Studio · 自建中继服务器（FastAPI 版）
+# opencode 远程控制 · 中继服务器（FastAPI 版，方案 A，端口 8999）
 #
-# 哑管道：只按 device_token 路由，桥接「桌面端出站 WS /client」与「手机页面
-# WS /s/ws」。不做任何业务解析——业务在桌面端（agent 执行、写保护、状态管理）。
-# 协议见 docs/relay/protocol.md；桌面端 Go 客户端与此版完全兼容。
+# 哑管道：只按 device_token 路由，桥接「桥进程出站 WS /client」与「手机页面
+# WS /s/ws」。不做任何业务解析——业务在 opencode_bridge.py（协议翻译）与
+# opencode serve。与 relay-server/（Local AI Studio 自用中继）互不复用，代码各自独立。
+# 协议见 docs/relay/protocol.md。
 #
-# 运行：python3 main.py（或 uvicorn main:app --host 0.0.0.0 --port 9000）
-# 建议用 Caddy 反代 127.0.0.1:9000 终结 TLS（见 docs/relay/deploy.md）。
+# 运行：python3 main.py（或 uvicorn main:app --host 0.0.0.0 --port 8999）
+# 建议用 Caddy 反代 127.0.0.1:8999 终结 TLS（见 opencode-relay/README-opencode.md）。
+
+# 兼容 Python 3.8：注解延迟求值（dict[str, dict] / tuple[str, int] 等）
+from __future__ import annotations
 
 import argparse
 import asyncio
@@ -66,7 +70,7 @@ STATIC_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; char
 
 @app.get("/s/{sub}/{name}")
 async def static_file(sub: str, name: str) -> Response:
-    """页面静态资源（css/、js/）。仅允许单层目录 + 白名单后缀，拒绝路径穿越。"""
+    """页面静态资源（css/、images/）。仅允许单层目录 + 白名单后缀，拒绝路径穿越。"""
     if sub not in ("css", "js", "images") or "/" in name or ".." in name or "\\" in name:
         return Response(status_code=404)
     ext = os.path.splitext(name)[1].lower()

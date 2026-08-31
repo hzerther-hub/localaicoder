@@ -105,6 +105,14 @@ def dataurl_of_image_part(part):
     return url
 
 
+def scoped(path, directory):
+    """API 路径追加 ?directory=（opencode 1.x 按目录作用域；旧版本忽略该参数时行为同全局，安全降级）。"""
+    if not directory:
+        return path
+    sep = "&" if "?" in path else "?"
+    return f"{path}{sep}directory={quote(directory)}"
+
+
 def oc_sessions_to_phone(sessions, running_map, trash_map):
     out = []
     for s in sessions:
@@ -140,12 +148,23 @@ def translate_event(ev, running_map):
         pt = part.get("type")
         if pt in ("tool", "tool-call", "tool-input", "tool-start"):
             st = part.get("state") or {}
-            name = part.get("tool") or part.get("name") or st.get("title") or pt
-            # 一个 tool part 的 updated 会触发多次，按 part id 去重，避免手机页刷屏
+            name = str(part.get("tool") or part.get("name") or st.get("title") or pt)
+            # 同一 tool part 的 updated 会触发多次：pending/running 只发一次 tool_start，
+            # completed/error 发 tool_result（带参数与输出），供手机端「编程过程」面板展示
             pid = part.get("id") or f"{pt}:{part.get('messageID')}"
-            if pid not in running_map.get("_tool_seen", set()):
-                running_map.setdefault("_tool_seen", set()).add(pid)
-                frames.append({"type": "tool", "delta": str(name)})
+            seen = running_map.setdefault("_tool_seen", {})
+            status = st.get("status") or "pending"
+            inp = st.get("input") if isinstance(st.get("input"), dict) else {}
+            if status in ("completed", "error"):
+                if seen.get(pid) == "start":
+                    seen[pid] = "done"
+                    out = str(st.get("output") or st.get("error") or "")
+                    if len(out) > 1000:
+                        out = "…（已截断）\n" + out[-900:]
+                    frames.append({"type": "tool_result", "name": name, "args": inp, "result": out})
+            elif seen.get(pid) != "start":
+                seen[pid] = "start"
+                frames.append({"type": "tool_start", "name": name, "args": inp})
         elif pt in ("agent", "agent-start"):
             frames.append({"type": "tool", "delta": f"agent: {part.get('name') or 'sub'}"})
 
@@ -201,6 +220,7 @@ class Bridge:
         self.current = ""          # 当前打开的 opencode session id
         self.current_model = self.default_model
         self.running_map = {}      # session_id -> bool
+        self._dir_by_sid = {}      # session_id -> 创建目录（session 级调用按目录作用域）
         self.pending_perms = {}    # permissionID -> Permission(ask 模式等待手机审批)
         self.perm_timers = {}      # permissionID -> TimerHandle(超时自动拒绝)
         self.insecure = cfg["relay"].get("insecure", False)
@@ -381,6 +401,16 @@ class Bridge:
                     self.current = sid
                     self.running_map.setdefault(sid, False)
                     await self._send({"type": "session:opened", "id": sid})
+            elif t == "workspace":
+                # 手机→PC 同步：切桥的活动工作区（影响 state 显示、git 分支、新会话归属）。
+                # opencode serve 的执行目录由 ?directory= 按会话下发，见 scoped()。
+                d = (frame.get("dir") or "").strip()
+                if d and os.path.isdir(d):
+                    self.workspace = d
+                    log(f"工作区切换（手机端）-> {d}")
+                    await self._send(await self._state(rid))
+                else:
+                    await self._send({"type": "error", "delta": f"切换失败：目录不存在 {d}", "rid": rid})
             elif t == "permission_response":
                 # 手机对 ask 权限的审批结果：allow/deny/always -> once/reject/always
                 await self._respond_phone_permission(frame)
@@ -415,10 +445,11 @@ class Bridge:
                     imgs.append(d)
         await self._send({"type": "user_message", "session": sid, "text": text, "images": imgs})
 
-        # 确认/创建会话
+        # 确认/创建会话（新会话 born 在当前工作区）
         if not await asyncio.to_thread(self.oc.session_exists, sid):
-            new = await asyncio.to_thread(self.oc.post, "/session", {"title": text[:40]})
+            new = await asyncio.to_thread(self.oc.post, scoped("/session", self.workspace), {"title": text[:40]})
             sid = (new or {}).get("id", sid)
+            self._dir_by_sid[sid] = self.workspace
         self.current = sid
 
         parts = [{"type": "text", "text": text}]
@@ -432,9 +463,9 @@ class Bridge:
         m = self._model_obj()
         if m:
             body["model"] = m
-        log(f"send -> session={sid} 模型={self.current_model or '(默认)'}")
+        log(f"send -> session={sid} 模型={self.current_model or '(默认)'} 工作区={self._dir_by_sid.get(sid) or self.workspace}")
         try:
-            await asyncio.to_thread(self.oc.post, f"/session/{sid}/prompt_async", body)
+            await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/prompt_async", self._dir_by_sid.get(sid) or self.workspace), body)
         except Exception as e:
             log(f"prompt_async 失败: {e}")
             await self._send({"type": "error", "delta": f"发送失败：{e}"})
@@ -442,7 +473,7 @@ class Bridge:
     async def _handle_stop(self, frame):
         sid = frame.get("session")
         if sid:
-            await asyncio.to_thread(self.oc.post, f"/session/{sid}/abort", None)
+            await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/abort", self._dir_by_sid.get(sid)), None)
             await self._send({"type": "run:finished", "sessionId": sid})
 
     async def _handle_delete(self, sid):
@@ -469,6 +500,7 @@ class Bridge:
             sessions = await asyncio.to_thread(self.oc.get, "/session")
         except Exception:
             sessions = []
+        self._dir_by_sid = {s.get("id"): (s.get("directory") or s.get("path") or "") for s in sessions or []}
         return {
             "type": "state", "rid": rid,
             "workspace": self.workspace, "mode": self.mode, "current": self.current_model,
@@ -480,7 +512,7 @@ class Bridge:
         if not sid:
             return {"type": "messages", "rid": rid, "id": sid, "messages": []}
         try:
-            data = await asyncio.to_thread(self.oc.get, f"/session/{sid}/message")
+            data = await asyncio.to_thread(self.oc.get, scoped(f"/session/{sid}/message", self._dir_by_sid.get(sid)))
         except Exception:
             return {"type": "messages", "rid": rid, "id": sid, "messages": []}
         msgs = []

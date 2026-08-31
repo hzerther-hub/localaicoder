@@ -35,11 +35,24 @@
   <!-- 当前会话名 -->
   <div id="sessName" class="sessname"></div>
 
-  <!-- 会话抽屉 -->
-  <div id="drawer"><div class="panel" id="sessList"></div></div>
+  <!-- 会话抽屉（顶部：项目同步方向配置） -->
+  <div id="drawer"><div class="panel">
+    <div id="syncRow"><span>项目同步</span><select id="syncSel">
+      <option value="pc2m">跟随 PC</option>
+      <option value="m2pc">控制 PC</option>
+    </select></div>
+    <div id="sessList"></div>
+  </div></div>
 
   <!-- 消息日志 -->
   <div id="log"><div class="empty">从左上选择一个会话开始</div></div>
+
+  <!-- 编程过程（点击底部按钮切换：过程面板 ⇋ 聊天） -->
+  <div id="codePanel">
+    <div id="codeHead"><span class="t">⌨ 编程过程</span><span id="codeRound"></span><button id="codeClear" type="button">清空</button></div>
+    <div id="codeLog"></div>
+  </div>
+  <div id="codeDock"><button id="codeBtn" type="button">⌨ 编程过程</button><span id="codeDot"></span></div>
 
   <!-- 斜杠命令菜单 -->
   <div id="slash"></div>

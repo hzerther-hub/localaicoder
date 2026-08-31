@@ -284,6 +284,11 @@ func (rc *relayClient) pump(a *App, ctx context.Context, conn *websocket.Conn, s
 			if id := msg.S(in, "id"); id != "" {
 				a.openSessionFromPhone(id)
 			}
+		case "workspace":
+			// 手机端切项目（同步方向=手机→PC）：切工作区并打开该项目最近的会话
+			if dir := msg.S(in, "dir"); dir != "" {
+				a.switchWorkspaceFromPhone(dir)
+			}
 		}
 	}
 }
@@ -296,6 +301,22 @@ func (a *App) openSessionFromPhone(id string) {
 	_ = a.LoadSession(id) // 切工作区 + 设 sessionID + 播种历史 + fanout session:opened(手机)
 	if a.ctx != nil {
 		wailsruntime.EventsEmit(a.ctx, "session:opened", id) // 桌面 UI 跟随切换
+	}
+}
+
+// switchWorkspaceFromPhone 手机端切换项目：切工作区，并自动打开该项目最近的会话（如有）。
+// SetWorkspace/LoadSession 内部会广播 sessions:changed / session:opened，手机端状态随之对齐。
+func (a *App) switchWorkspaceFromPhone(dir string) {
+	if a == nil || dir == "" {
+		return
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return
+	}
+	a.SetWorkspace(dir)
+	for _, s := range sessions.ListSessions(1, dir, "") {
+		a.LoadSession(s.ID)
+		break
 	}
 }
 

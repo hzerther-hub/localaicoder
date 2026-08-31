@@ -3,7 +3,7 @@ const D=new URLSearchParams(location.search).get('d');
 const WS=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/s/ws?d='+D;
 const $=id=>document.getElementById(id);
 const log=$('log');
-let ALL=[],wsCur='',sid='',runs=new Set(),cur=null,ws,rid=0,lastCurrent='',openSeq=0,permId=null,permSid='';
+let ALL=[],wsCur='',sid='',runs=new Set(),cur=null,ws,rid=0,lastCurrent='',openSeq=0,permId=null,permSid='',projPin=false;
 const pend={};
 const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML;};
 const ago=ts=>{const d=Date.now()/1000-ts;if(d<60)return '刚刚';if(d<3600)return Math.floor(d/60)+'分';if(d<86400)return Math.floor(d/3600)+'时';return Math.floor(d/86400)+'天';};
@@ -25,22 +25,23 @@ function connect(){
   if(m.sessionId&&sid&&m.sessionId!==sid)return;
   if(m.type==='user_message'){const d=add('user',m.text);addMsgImgs(d,m.images);cur=null;}
   else if(m.type==='text'){if(!cur)cur=add('ai','');cur.textContent+=m.delta;log.scrollTop=log.scrollHeight;}
-  else if(m.type==='tool'){add('tool','🔧 '+m.delta);}
-  else if(m.type==='error'){add('err',m.delta);cur=null;}
-  else if(m.type==='run:started'){runs.add(m.sessionId);mark(m.sessionId,true);badge();if(m.sessionId===sid){steps=[];round=0;planned=false;renderSteps();}}
-  else if(m.type==='run:finished'){runs.delete(m.sessionId);mark(m.sessionId,false);badge();cur=null;if(m.sessionId===sid){steps=[];renderSteps();}}
+  else if(m.type==='tool'){add('tool','🔧 '+m.delta);codeAdd('run','▶ '+m.delta);}
+ else if(m.type==='error'){add('err',m.delta);cur=null;codeAdd('err',m.delta);}
+ else if(m.type==='run:started'){runs.add(m.sessionId);mark(m.sessionId,true);badge();if(m.sessionId===sid){steps=[];round=0;planned=false;renderSteps();codeAdd('meta','● 任务开始');}}
+ else if(m.type==='run:finished'){runs.delete(m.sessionId);mark(m.sessionId,false);badge();cur=null;if(m.sessionId===sid){steps=[];renderSteps();codeAdd('meta','● 运行结束');}}
   else if(m.type==='usage'){usage=m.usage||{};total=m.total||{};renderStats();}
- else if(m.type==='round'){round=+m.n;renderSteps();}
+ else if(m.type==='round'){round=+m.n;renderSteps();codeAdd('round','── 第 '+m.n+' 轮 ──');$('codeRound').textContent=m.n?('第 '+m.n+' 轮'):'';}
  else if(m.type==='tool_start'){
+  codeAdd('run','▶ '+m.name+(codeArgs(m.args)?'   '+codeArgs(m.args):''));
   if(!runs.has(sid)){renderSteps();return;}
   if(m.name==='todo_write'){const ts=(m.args&&m.args.todos)||[];steps=ts.slice(0,20).map((t,i)=>({name:'todo',title:String((t&&t.title)||('步骤 '+(i+1))).slice(0,80),status:(t&&t.status)==='completed'?'done':(t&&t.status)==='in_progress'?'run':'wait'}));planned=true;}
   else if(!planned){steps=steps.filter(x=>x.name!=='…');steps.push({name:m.name,title:m.name,status:'run'});}
   renderSteps();
  }
- else if(m.type==='tool_result'){if(!runs.has(sid)){renderSteps();return;}if(m.name!=='todo_write'&&!planned){for(let i=steps.length-1;i>=0;i--){if(steps[i].name===m.name&&steps[i].status==='run'){steps[i].status='done';break;}}}renderSteps();}
- else if(m.type==='tool_denied'){if(!runs.has(sid)){renderSteps();return;}for(let i=steps.length-1;i>=0;i--){if(steps[i].name===m.name&&steps[i].status==='run'){steps[i].status='deny';break;}}renderSteps();}
+ else if(m.type==='tool_result'){codeAdd('done','✔ '+m.name+(m.result?'   '+(String(m.result).length>500?String(m.result).slice(0,500)+'…':String(m.result)):''));if(!runs.has(sid)){renderSteps();return;}if(m.name!=='todo_write'&&!planned){for(let i=steps.length-1;i>=0;i--){if(steps[i].name===m.name&&steps[i].status==='run'){steps[i].status='done';break;}}}renderSteps();}
+ else if(m.type==='tool_denied'){codeAdd('deny','✗ '+(m.name||'工具'));if(!runs.has(sid)){renderSteps();return;}for(let i=steps.length-1;i>=0;i--){if(steps[i].name===m.name&&steps[i].status==='run'){steps[i].status='deny';break;}}renderSteps();}
  else if(m.type==='model:changed'){loadModels();}
-  else if(m.type==='permission:changed'){try{$('modeSel').value=m.value}catch(e){}}
+  else if(m.type==='permission:changed'){try{$('modeSel').value=m.value}catch(e){}ddRefresh();}
   else if(m.type==='sessions:changed'){loadState();}
   else if(m.type==='session:opened'){openS(m.id,false);}
  };
@@ -52,10 +53,12 @@ function applyState(s){
  const map={};ALL.forEach(x=>{const k=x.workspace||'';(map[k]=map[k]||{n:0,u:0}).n++;map[k].u=Math.max(map[k].u,x.updated)});
  // 保证当前项目总是出现在下拉（即使还没会话，新建项目也能看到）
  const w0=s.workspace||'';if(w0&&!map[w0])map[w0]={n:0,u:0};
- const sel=$('proj');const keep=s.workspace||wsCur;
- sel.innerHTML=Object.keys(map).sort((a,b)=>map[b].u-map[a].u).map(w=>'<option value="'+esc(w)+'">'+esc(w.split('/').filter(Boolean).pop()||w)+' ('+map[w].n+')</option>').join('');
- // 顶部项目始终镜像实际工作区（与底部状态栏同源）：桥是单工作区，
- // 会话可跨项目续用，会话里存的 directory 只代表创建地、会过期
+ const sel=$('proj');
+ // PC 端切换项目（s.workspace 变化）→ 清除手机端手动锁定；未锁定时顶部镜像实际工作区
+ if(s.workspace&&window.__ws&&s.workspace!==window.__ws)projPin=false;
+ const keep=(projPin&&wsCur)?wsCur:(s.workspace||wsCur);
+ const opts=Object.keys(map).sort((a,b)=>map[b].u-map[a].u).map(w=>'<option value="'+esc(w)+'">'+esc(w.split('/').filter(Boolean).pop()||w)+' ('+map[w].n+')</option>').join('');
+ if(opts!==window.__projOpts){window.__projOpts=opts;sel.innerHTML=opts;} // 选项没变不重建，避免打断手机端展开中的下拉
  wsCur=map[keep]?keep:(sel.options[0]?sel.options[0].value:'');sel.value=wsCur;
  window.__ws=s.workspace||'';window.__branch=s.branch||'';try{compact=(s.compact&&{budget:Number(s.compact.budget)||0,window:Number(s.compact.window)||0})||compact}catch(e){}
 renderStats();
@@ -64,7 +67,7 @@ runs=new Set(ALL.filter(x=>x.running).map(x=>x.id));
  try{$('modeSel').value=s.mode||'always'}catch(e){}
  const _cur=s.current||'';if(_cur&&_cur!==lastCurrent){lastCurrent=_cur;loadModels();}
  const _cs=s.current_session||'';if(_cs&&_cs!==sid){openS(_cs,false);}
- setSessName();renderSess();badge();
+ setSessName();renderSess();badge();ddRefresh();
 }
 function loadState(){req({type:'state'}).then(applyState);}
 let steps=[],round=0,planned=false;
@@ -93,15 +96,16 @@ function renderSess(){
   +'<span class="ago">'+ago(x.updated)+'</span></div>';});
  $('sessList').innerHTML=h||'<div class="gr">该项目暂无会话</div>';
 }
-function badge(){const c=$('conn');if(c)c.classList.toggle('working',runs.size>0);$('run').textContent=runs.size?'▶ '+runs.size:'';}
+function badge(){const c=$('conn');if(c)c.classList.toggle('working',runs.size>0);document.body.classList.toggle('working',runs.size>0);$('run').textContent=runs.size?'▶ '+runs.size:'';}
 function mark(id,on){ALL.forEach(x=>{if(x.id===id)x.running=on});renderSess();}
 // 顶部项目下拉同步到指定工作区
 function syncProj(w){w=w||'';if(!w||w===wsCur)return;wsCur=w;const sel=$('proj');for(const o of sel.options){if(o.value===w){sel.value=w;break;}}renderSess();}
 async function openS(id,notify){
  const seq=++openSeq;
- // 会话统一在实际工作区运行：顶部以实际工作区为准（会话存的 directory 只代表创建地）
- const sx=ALL.find(x=>x.id===id);syncProj(window.__ws||(sx&&sx.workspace)||'');
- sid=id;$('drawer').classList.remove('open');log.innerHTML='';cur=null;renderSess();
+ // PC 端打开的会话：顶部同步实际工作区（桥单工作区下会话存的 directory 只代表创建地）；
+ // 手机端自己点的会话不动当前项目选择
+ if(!notify){const sx=ALL.find(x=>x.id===id);syncProj(window.__ws||(sx&&sx.workspace)||'');}
+ sid=id;$('drawer').classList.remove('open');log.innerHTML='';cur=null;renderSess();codeLog.innerHTML='';codeSticky=true;$('codeRound').textContent='';
  setSessName();
  if(notify){try{ws.send(JSON.stringify({type:'open_session',id}))}catch(e){}}
  const m=await req({type:'messages',id});
@@ -123,6 +127,7 @@ function fillEffort(mi){
    ? choices.map(c=>'<option value="'+esc(c)+'"'+((mi.reasoning_effort||'')===c?' selected':'')+'>'+esc(c===''?'默认':c)+'</option>').join('')
    : '<option value="">—</option>';
  if(mi&&mi.reasoning_effort)ef.value=mi.reasoning_effort;
+ ddRefresh();
 }
 $('model').onchange=async()=>{const k=$('model').value;try{await req({type:'model',key:k});}catch(e){}
  try{const d=await req({type:'models'});if(d)sel2models(d);}catch(e){}
@@ -140,7 +145,45 @@ $('sessList').onclick=e=>{const act=e.target.closest('.s-act');
 $('btnS').onclick=()=>{$('drawer').classList.toggle('open');if($('drawer').classList.contains('open'))loadState();};
 $('permBar').onclick=e=>{const b=e.target.closest('button');if(!b||!permId)return;const v=b.dataset.p;try{ws.send(JSON.stringify({type:'permission_response',id:permId,response:v,sessionID:permSid}));}catch(_){}permId=null;$('permBar').style.display='none';};
 $('drawer').onclick=e=>{if(e.target.id==='drawer')$('drawer').classList.remove('open')};
-$('proj').onchange=()=>{wsCur=$('proj').value;renderSess();};
+// ---- 美化下拉：原生 select 隐藏为数据源，套自定义按钮+弹层（onchange 逻辑不变） ----
+function ddClose(except){document.querySelectorAll('.dd-pop.open').forEach(p=>{if(p!==except)p.classList.remove('open')});}
+function ddLabel(sel){const w=sel.closest('.ddw');if(!w)return;const o=sel.selectedOptions&&sel.selectedOptions[0];w.querySelector('.dd-btn').textContent=o?o.textContent:'';}
+function ddBuild(sel){const pop=sel.closest('.ddw').querySelector('.dd-pop');
+ pop.innerHTML=[...sel.options].map(o=>'<div class="dd-i'+(o.selected?' on':'')+'" data-v="'+esc(o.value)+'">'+esc(o.textContent)+'</div>').join('');}
+function ddRefresh(){document.querySelectorAll('select.dd-native').forEach(s=>ddLabel(s));}
+function beautifySelect(sel){if(!sel||sel.dataset.dd)return;sel.dataset.dd='1';sel.classList.add('dd-native');
+ const w=document.createElement('div');w.className='ddw';
+ const btn=document.createElement('button');btn.type='button';btn.className='dd-btn';
+ const pop=document.createElement('div');pop.className='dd-pop';
+ sel.parentNode.insertBefore(w,sel);w.append(btn,pop,sel);
+ btn.onclick=e=>{e.stopPropagation();const was=pop.classList.contains('open');ddClose(null);if(!was){ddBuild(sel);pop.classList.add('open');}};
+ pop.onclick=e=>{const o=e.target.closest('[data-v]');if(!o)return;sel.value=o.dataset.v;ddLabel(sel);pop.classList.remove('open');sel.dispatchEvent(new Event('change'));};
+ ddLabel(sel);}
+document.addEventListener('click',()=>ddClose(null));
+['proj','model','effort','modeSel','syncSel'].forEach(id=>beautifySelect($(id)));
+// ---- 编程过程面板（聊天 ⇋ 过程 切换） ----
+const codeLog=$('codeLog');let codeSticky=true;
+codeLog.addEventListener('scroll',()=>{codeSticky=codeLog.scrollTop+codeLog.clientHeight>=codeLog.scrollHeight-48;});
+$('codeBtn').onclick=()=>{const on=document.body.classList.toggle('coding');$('codeBtn').textContent=on?'💬 返回聊天':'⌨ 编程过程';if(on)codeLog.scrollTop=codeLog.scrollHeight;};
+$('codeClear').onclick=()=>{codeLog.innerHTML='';};
+function codeAdd(cls,t){if(t===''||t==null)return;const d=document.createElement('div');d.className='cl '+cls;d.textContent=t;codeLog.appendChild(d);
+ while(codeLog.childNodes.length>400)codeLog.removeChild(codeLog.firstChild);
+ if(codeSticky)codeLog.scrollTop=codeLog.scrollHeight;}
+function codeArgs(a){if(!a||typeof a!=='object')return '';
+ const K=['path','file','cmd','command','pattern','query','glob','url','dir'];const p=[];
+ for(const k of K){if(a[k]!=null&&a[k]!=='')p.push(k+'='+String(a[k]).slice(0,120));}
+ if(!p.length){try{const s=JSON.stringify(a);if(s&&s!=='{}')p.push(s.slice(0,120));}catch(e){}}
+ return p.join('   ');}
+// 项目同步方向（存本机 localStorage）：pc2m=跟随 PC（PC→手机）；m2pc=驱动 PC（手机→PC）
+const syncDir=()=>{try{return localStorage.getItem('projSync')||'pc2m'}catch(e){return 'pc2m'}};
+try{$('syncSel').value=syncDir()}catch(e){}
+$('syncSel').onchange=()=>{const v=$('syncSel').value;try{localStorage.setItem('projSync',v)}catch(e){}};
+$('proj').onchange=()=>{wsCur=$('proj').value;renderSess();
+ if(syncDir()==='m2pc'){ // 手机→PC：让电脑切到该项目（状态回包后自动对齐；不支持的后端回错误帧则回退本地浏览）
+  try{req({type:'workspace',dir:wsCur}).then(m=>{if(m&&m.type==='error'){add('err',m.delta||'切换失败');projPin=true;}}).catch(()=>{projPin=true;});}catch(e){projPin=true;}
+  return;}
+ projPin=true; // PC→手机：仅本地浏览锁定，PC 端切项目时自动跟随
+};
 $('qc').onclick=e=>{const b=e.target.closest('[data-p]');if(!b)return;const i=$('i');i.value=(i.value?i.value+'\n':'')+b.dataset.p;i.focus();};
 let pendingAtts=[];
 function addAttChip(a){const box=$('pendingAtts');if(!box)return;const c=document.createElement('div');c.className='att-chip';

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"localai/internal/config"
 	"localai/internal/llm"
@@ -67,10 +68,6 @@ func Classify(in Input, cfg Config) Decision {
 	if text == "" {
 		return DecisionSimple
 	}
-	// 3) 会话首轮是任务布置：走强模型
-	if in.TurnNumber <= 1 {
-		return DecisionStrong
-	}
 	maxChars := cfg.SimpleMaxChars
 	if maxChars <= 0 {
 		maxChars = config.SmartRouteDefaultMaxChars
@@ -79,11 +76,11 @@ func Classify(in Input, cfg Config) Decision {
 	if maxWords <= 0 {
 		maxWords = config.SmartRouteDefaultMaxWords
 	}
-	// 4) 代码块 / 行内代码：任务型
-	if strings.Contains(text, "```") || strings.Contains(text, "`") {
+	// 3) 代码块：任务型（行内单反引号易在中文里误判，不再单独作为代码信号）
+	if strings.Contains(text, "```") {
 		return DecisionStrong
 	}
-	// 5) 强关键词
+	// 4) 强关键词
 	if strongEn.MatchString(text) {
 		return DecisionStrong
 	}
@@ -92,17 +89,28 @@ func Classify(in Input, cfg Config) Decision {
 			return DecisionStrong
 		}
 	}
-	// 6) 多段落：说明描述较复杂
+	// 5) 多段落：说明描述较复杂
 	if paragraphs(text) >= 2 {
 		return DecisionStrong
 	}
-	// 7) 长度硬阈值：英文按词数、中文按字符数（各对齐各自阈值）
+	// 6) 长度硬阈值：英文按字符数/词数；中文无空格分词（words 恒≈1），
+	// 改用「词数×2」折算汉字阈值，避免复杂中文任务被漏判为简单。
 	charLen := len([]rune(text))
 	words := len(strings.Fields(text))
+	if containsHan(text) {
+		zhLimit := maxWords * 2
+		if charLen > zhLimit {
+			return DecisionStrong
+		}
+		if charLen >= zhLimit*3/4 {
+			return DecisionUnsure
+		}
+		return DecisionSimple
+	}
 	if charLen > maxChars || words > maxWords {
 		return DecisionStrong
 	}
-	// 8) 弱信号区（本地扩展）：接近阈值但无任何强信号 → 拿不准
+	// 7) 弱信号区：接近阈值但无任何强信号 → 拿不准
 	if charLen >= maxChars*3/4 || words >= maxWords*3/4 {
 		return DecisionUnsure
 	}
@@ -144,9 +152,24 @@ func Resolve(in Input, cfg Config) (string, Decision) {
 	return key, d
 }
 
+// containsHan 文本是否含 CJK 汉字（用于中英文阈值/段落分流）。
+func containsHan(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
 func paragraphs(s string) int {
+	sep := "\n\n"
+	if containsHan(s) {
+		// 中文常以单个换行分隔段落；英文则以空行分隔
+		sep = "\n"
+	}
 	n := 0
-	for _, p := range strings.Split(s, "\n\n") {
+	for _, p := range strings.Split(s, sep) {
 		if strings.TrimSpace(p) != "" {
 			n++
 		}
@@ -173,7 +196,8 @@ var (
 // Arbitrate 用本地大脑（config.GetDispatchModel()）仲裁；任何失败都
 // 归 simple（宁可便宜，不打断对话）。结果按文本哈希缓存。
 func Arbitrate(text string) Decision {
-	sum := sha1.Sum([]byte(text))
+	// 缓存键纳入本地大脑 key：切换 dispatch_model 后旧结果自然失效
+	sum := sha1.Sum([]byte(config.GetDispatchModel() + "\x00" + text))
 	cacheKey := string(sum[:])
 	arbMu.Lock()
 	if d, ok := arbCache[cacheKey]; ok {
@@ -202,6 +226,8 @@ func arbitrateCall(text string) Decision {
 	light.ReasoningEffort = ""
 	light.ContextWindow = 0
 	type result struct{ text string }
+	// 后台 goroutine 不随 8s 超时取消（StreamChat 不接外部 ctx）；但 ch 有缓冲
+	// 不会阻塞，且 StreamChat 内部 90s 空闲看门狗兜底，goroutine 最终自然退出，非泄漏。
 	ch := make(chan result, 1)
 	go func() {
 		var sb strings.Builder

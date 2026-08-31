@@ -24,16 +24,18 @@ func TestClassifyOrder(t *testing.T) {
 	}{
 		{"非文本附件→strong", Input{UserText: "hi", HasNonTextContent: true, TurnNumber: 3}, DecisionStrong},
 		{"空文本→simple", Input{UserText: "  ", TurnNumber: 3}, DecisionSimple},
-		{"首轮→strong", Input{UserText: "hi", TurnNumber: 1}, DecisionStrong},
-		{"代码块→strong", Input{UserText: "看看这段 `fmt.Println` 什么问题", TurnNumber: 3}, DecisionStrong},
+		{"首轮简单问候→simple", Input{UserText: "hi", TurnNumber: 1}, DecisionSimple},
+		{"代码块→strong", Input{UserText: "看看这段\n```\nfmt.Println(1)\n```", TurnNumber: 3}, DecisionStrong},
+		{"单反引号不再误判→simple", Input{UserText: "看看这段 `引用` 内容", TurnNumber: 3}, DecisionSimple},
 		{"英文关键词→strong", Input{UserText: "please refactor this module", TurnNumber: 3}, DecisionStrong},
 		{"中文关键词→strong", Input{UserText: "帮我排查一下这个报错的根因", TurnNumber: 3}, DecisionStrong},
 		{"无关键词短句→simple", Input{UserText: "read the file and print its contents", TurnNumber: 3}, DecisionSimple},
 		{"多段落→strong", Input{UserText: "第一段。\n\n第二段。", TurnNumber: 3}, DecisionStrong},
-		{"超长→strong", Input{UserText: strings.Repeat("长", 200), TurnNumber: 3}, DecisionStrong},
+		{"中文单换行多段→strong", Input{UserText: "第一段。\n第二段。\n第三段。", TurnNumber: 3}, DecisionStrong},
+		{"超长中文→strong", Input{UserText: strings.Repeat("长", 200), TurnNumber: 3}, DecisionStrong},
 		{"英文超词数→strong", Input{UserText: strings.Repeat("word ", 40), TurnNumber: 3}, DecisionStrong},
 		{"短句→simple", Input{UserText: "继续", TurnNumber: 3}, DecisionSimple},
-		{"中文弱信号区→unsure", Input{UserText: strings.Repeat("这", 130), TurnNumber: 3}, DecisionUnsure},
+		{"中文弱信号区→unsure", Input{UserText: strings.Repeat("这", 50), TurnNumber: 3}, DecisionUnsure},
 	}
 	for _, c := range cases {
 		if got := Classify(c.in, cfg); got != c.want {
@@ -44,12 +46,12 @@ func TestClassifyOrder(t *testing.T) {
 
 func TestClassifyChineseLength(t *testing.T) {
 	cfg := testCfg()
-	// 中文按字符数：>160 → strong；≥120 弱信号区 → unsure；短句 → simple
-	if got := Classify(Input{UserText: strings.Repeat("汉", 170), TurnNumber: 3}, cfg); got != DecisionStrong {
-		t.Fatalf("170 汉字应 strong, got %v", got)
+	// 中文阈值 = maxWords×2 = 56：>56 → strong；≥42 弱信号区 → unsure；短句 → simple
+	if got := Classify(Input{UserText: strings.Repeat("汉", 100), TurnNumber: 3}, cfg); got != DecisionStrong {
+		t.Fatalf("100 汉字应 strong, got %v", got)
 	}
-	if got := Classify(Input{UserText: strings.Repeat("汉", 130), TurnNumber: 3}, cfg); got != DecisionUnsure {
-		t.Fatalf("130 汉字应 unsure, got %v", got)
+	if got := Classify(Input{UserText: strings.Repeat("汉", 50), TurnNumber: 3}, cfg); got != DecisionUnsure {
+		t.Fatalf("50 汉字应 unsure, got %v", got)
 	}
 	if got := Classify(Input{UserText: strings.Repeat("短", 10), TurnNumber: 3}, cfg); got != DecisionSimple {
 		t.Fatalf("10 汉字应 simple, got %v", got)
@@ -94,7 +96,7 @@ func TestArbitrateCache(t *testing.T) {
 	if d != DecisionSimple {
 		t.Fatalf("无大脑应归 simple, got %v", d)
 	}
-	sum := sha1.Sum([]byte(text))
+	sum := sha1.Sum([]byte(config.GetDispatchModel() + "\x00" + text))
 	arbMu.Lock()
 	_, ok := arbCache[string(sum[:])]
 	arbMu.Unlock()

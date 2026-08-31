@@ -25,6 +25,7 @@ import { xml } from '@codemirror/legacy-modes/mode/xml'
 import { sql } from '@codemirror/legacy-modes/mode/sql'
 import { api, DirEntry, DiagItem, onEvent } from '../bridge'
 import { useStore, t } from '../store'
+import ThinkingDots from './ThinkingDots'
 
 interface Tab { path: string; content: string; saved: string }
 
@@ -171,7 +172,7 @@ export default function EditorPanel() {
       return
     }
     const content = await api.readFileText(path)
-    setTabs((prev) => [...prev, { path, content, saved: content }])
+    setTabs((prev) => [{ path, content, saved: content }, ...prev])
     setActive(path)
   }
 
@@ -463,7 +464,7 @@ export default function EditorPanel() {
               lspInfo.available
                 ? <span className="lsp-ok" title={`LSP: ${lspInfo.server}`}>LSP {lspInfo.server} ●</span>
                 : <span className="lsp-no">
-                    {installing ? '⏳ 安装中…' : `LSP 未安装 ${lspInfo.server}`}
+                    {installing ? <><ThinkingDots className="sm" /> {t('安装中', 'Installing')}</> : `LSP 未安装 ${lspInfo.server}`}
                     {!installing && lspInfo.install_cmd && (
                       <button
                         className="btn tiny" style={{ marginLeft: 6 }}

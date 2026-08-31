@@ -37,7 +37,8 @@ func TestAgentSmartRoutingPicksSimple(t *testing.T) {
 	defer simpleSrv.Close()
 
 	config.SaveModelsData(map[string]any{
-		"default": "s/strong",
+		"default":        "s/strong",
+		"dispatch_smart": true,
 		"providers": []any{
 			map[string]any{
 				"id": "s", "name": "STRONG", "base_url": strongSrv.URL, "api_key": "k",
@@ -49,7 +50,6 @@ func TestAgentSmartRoutingPicksSimple(t *testing.T) {
 			},
 		},
 		"smart_routing": map[string]any{
-			"enabled":      true,
 			"simple_model": "q/simple",
 			"strong_model": "s/strong",
 		},
@@ -107,7 +107,8 @@ func TestAgentRoutingEscalation(t *testing.T) {
 	defer strongSrv.Close()
 
 	config.SaveModelsData(map[string]any{
-		"default": "q/simple",
+		"default":        "q/simple",
+		"dispatch_smart": true,
 		"providers": []any{
 			map[string]any{
 				"id": "s", "name": "STRONG", "base_url": strongSrv.URL, "api_key": "k",
@@ -119,7 +120,6 @@ func TestAgentRoutingEscalation(t *testing.T) {
 			},
 		},
 		"smart_routing": map[string]any{
-			"enabled":      true,
 			"simple_model": "q/simple",
 			"strong_model": "s/strong",
 		},
@@ -130,8 +130,8 @@ func TestAgentRoutingEscalation(t *testing.T) {
 	a := New(func(e msg.Event) { events = append(events, e) },
 		nil, nil, ModeAlways, m)
 
-	// 第二轮简单句路由到 simple；429 → 升级 strong 完成本轮
-	if _, err := a.Run("第一轮占位", nil, nil); err != nil {
+	// 首轮强关键词走 strong；第二轮简单句走 simple，429 → 升级 strong 完成本轮
+	if _, err := a.Run("帮我重构这个模块", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	text, err := a.Run("继续", nil, nil)

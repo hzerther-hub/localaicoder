@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"localai/internal/config"
@@ -19,7 +20,7 @@ func init() {
   "type": "function",
   "function": {
     "name": "call_model",
-    "description": "把一段文本子任务委派给另一个（云端）模型处理（云端才花钱，非必要不用）。只有当本地确实搞不定时才用：任务复杂/重推理/超出你上下文与能力，或本地缺少所需能力（识图、专门领域专长等），或你尝试后仍无法高质量完成。本地能搞定就别委派。目标选择：复杂、重推理、需更强能力→deepseek/deepseek-v4-pro；含图片/识图→deepseek/deepseek-v4-flash-vision-exp。model=目标模型 key；task=交给它的完整子任务提示词（尽量自包含）；reasoning_effort 可选（复杂任务可设 high）。只做文本子任务，不要传图片。",
+    "description": "把一段文本子任务委派给另一个（云端）模型处理（云端才花钱，非必要不用）。只有当本地确实搞不定时才用：任务复杂/重推理/超出你上下文与能力，或你尝试后仍无法高质量完成。本地能搞定就别委派。本工具只做纯文本子任务，不转发图片等附件。目标选择：复杂、重推理、需更强能力→deepseek/deepseek-v4-pro。model=目标模型 key；task=交给它的完整子任务提示词（尽量自包含）；reasoning_effort 可选（复杂任务可设 high）。",
     "parameters": {
       "type": "object",
       "properties": {
@@ -53,21 +54,52 @@ const DispatchResultKeep = 8000
 
 // isLocalKey 模型是否指向本地端点（127.0.0.1 / localhost）。
 func isLocalKey(modelKey string) bool {
-	mc := config.FindModel(modelKey)
-	if mc == nil {
-		return false
-	}
-	return strings.Contains(mc.BaseURL, "127.0.0.1") || strings.Contains(mc.BaseURL, "localhost")
+	return config.IsLocalModelKey(modelKey)
 }
 
+// healthTTL 本地服务健康探测结果的有效期：结果按 baseURL 缓存一小段时间，
+// 避免每轮构造工具 schema 时都发一次真实 HTTP 探测（3s 超时）拖慢对话。
+const healthTTL = 15 * time.Second
+
+type healthProbe struct {
+	ok bool
+	at time.Time
+}
+
+var (
+	healthMu    sync.Mutex
+	healthCache = map[string]healthProbe{}
+)
+
 // localHealthy 给定本地模型 key，判断对应服务是否已启动且健康
-// （GET {base_url}/models 返回 2xx 即健康；Go 版用 HTTP 探测替代 systemd 查询）。
+// （GET {base_url}/models 返回 2xx 即健康；结果按 baseURL 做短 TTL 缓存）。
 func localHealthy(modelKey string) bool {
 	mc := config.FindModel(modelKey)
 	if mc == nil {
 		return false
 	}
-	req, err := http.NewRequest("GET", strings.TrimRight(mc.BaseURL, "/")+"/models", nil)
+	url := strings.TrimRight(mc.BaseURL, "/") + "/models"
+	healthMu.Lock()
+	if p, ok := healthCache[url]; ok && time.Since(p.at) < healthTTL {
+		healthMu.Unlock()
+		return p.ok
+	}
+	healthMu.Unlock()
+
+	ok := probeHealthy(mc, url)
+
+	healthMu.Lock()
+	if len(healthCache) >= 64 {
+		healthCache = map[string]healthProbe{}
+	}
+	healthCache[url] = healthProbe{ok: ok, at: time.Now()}
+	healthMu.Unlock()
+	return ok
+}
+
+// probeHealthy 真实探测一次本地服务健康（不做缓存）。
+func probeHealthy(mc *config.ModelConfig, url string) bool {
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return false
 	}
@@ -83,15 +115,27 @@ func localHealthy(modelKey string) bool {
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
+// resetHealthCache 清空健康缓存（测试隔离用）。
+func resetHealthCache() {
+	healthMu.Lock()
+	healthCache = map[string]healthProbe{}
+	healthMu.Unlock()
+}
+
 // ValidateDispatchTarget 校验 call_model 的派发目标是否允许。
 // 允许：配置里的三个云端目标（flash/pro/vision）；
 // 拒绝：本地模型（自我调用/串行互斥）与白名单外的任何目标。
 func ValidateDispatchTarget(model string) (bool, string) {
 	cfg := config.GetDispatchConfig()
-	cloud := map[string]bool{
-		msg.S(cfg, "dispatch_flash"):  true,
-		msg.S(cfg, "dispatch_pro"):    true,
-		msg.S(cfg, "dispatch_vision"): true,
+	cloud := map[string]bool{}
+	for _, k := range []string{
+		msg.S(cfg, "dispatch_flash"),
+		msg.S(cfg, "dispatch_pro"),
+		msg.S(cfg, "dispatch_vision"),
+	} {
+		if k != "" {
+			cloud[k] = true
+		}
 	}
 	if cloud[model] {
 		return true, ""

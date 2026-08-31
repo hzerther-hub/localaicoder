@@ -268,6 +268,7 @@ type ModelConfig struct {
 	ReasoningChoices []string // 支持的等级列表（空 = 按 provider 推断）
 	ContextWindow    int      // 上下文窗口（token 数；0 = 未知）
 	MaxOutputTokens  int      // 最大输出 token（0 = 用默认/窗口/4）
+	Disabled         bool     // 在模型列表中隐藏/禁用（不参与选择与派发）
 	// 费用单价（USD/1M tokens）；Provider 级 pricing 字段，缺失为 0 = 不统计
 	PriceInHitPerM  float64 `json:"price_in_hit_per_m"`
 	PriceInMissPerM float64 `json:"price_in_miss_per_m"`
@@ -541,6 +542,7 @@ func loadModelsLocked() ([]ModelConfig, string) {
 				ReasoningChoices: ReasoningChoicesFor(pid, pname, m),
 				ContextWindow:    msg.I(m, "context_window"),
 				MaxOutputTokens:  msg.I(m, "max_output_tokens"),
+				Disabled:         msg.B(m, "disabled"),
 				PriceInHitPerM:   prices[0],
 				PriceInMissPerM:  prices[1],
 				PriceOutPerM:     prices[2],
@@ -559,6 +561,12 @@ func FindModel(key string) *ModelConfig {
 		}
 	}
 	return nil
+}
+
+// IsLocalModelKey 判断模型 key 是否指向本地模型（按项目约定，本地 provider
+// 一律用 gpulocal- 前缀）。call_model 委派白名单、云端回退共用此判定。
+func IsLocalModelKey(key string) bool {
+	return strings.HasPrefix(key, "gpulocal")
 }
 
 // ---------------- 界面语言 / 独立提问 / 字号 ----------------
@@ -804,7 +812,7 @@ func SetTelegramConfig(token, allowlist string) {
 
 var dispatchDefaults = map[string]any{
 	"model_dispatch":      true,
-	"dispatch_smart":      true,
+	"dispatch_smart":      false,
 	"auto_cloud_fallback": true,
 	"dispatch_model":      "gpulocal-8097/qwen38-27b-q8",
 	"dispatch_flash":      "deepseek/deepseek-v4-flash",
@@ -853,7 +861,7 @@ func GetModelDispatch() bool { return dispatchBool("model_dispatch") }
 // GetAutoCloudFallback 本地模型不可用时是否自动回退云端模型。
 func GetAutoCloudFallback() bool { return dispatchBool("auto_cloud_fallback") }
 
-// GetDispatchSmart 智排开关（按任务类型自动路由）。
+// GetDispatchSmart 智排开关：智能路由（简单/复杂分流）的主开关。
 func GetDispatchSmart() bool { return dispatchBool("dispatch_smart") }
 
 // GetDispatchModel 本地大脑模型 key。
@@ -900,7 +908,7 @@ func setDispatchStr(field, key string) {
 // SetModelDispatch 开关模型派发。
 func SetModelDispatch(on bool) { setDispatchBool("model_dispatch", on) }
 
-// SetDispatchSmart 开关智排。
+// SetDispatchSmart 开关智排（智能路由主开关）。
 func SetDispatchSmart(on bool) { setDispatchBool("dispatch_smart", on) }
 
 // SetAutoCloudFallback 开关本地不可用自动回退云端。
@@ -943,7 +951,7 @@ const (
 // SmartRoutingConfig 简单/复杂轮次智能路由配置。
 // simple_model / strong_model 为模型 key；缺省回退 dispatch_flash / dispatch_pro。
 type SmartRoutingConfig struct {
-	Enabled        bool // 总开关；未显式配置时回退旧 dispatch_smart 开关
+	Enabled        bool // 智能路由总开关；跟随「智排」dispatch_smart 主开关
 	Configured     bool // models.json 里是否显式写了 smart_routing 块
 	SimpleModel    string
 	StrongModel    string
@@ -953,18 +961,18 @@ type SmartRoutingConfig struct {
 }
 
 // GetSmartRouting 读 smart_routing 配置并解析回退：
-// enabled 未写 → 旧 dispatch_smart；simple/strong 未写 → dispatch_flash / dispatch_pro。
+// 开关跟随「智排」dispatch_smart；simple/strong 未写 → dispatch_flash / dispatch_pro。
 func GetSmartRouting() SmartRoutingConfig {
 	data := LoadModelsData()
 	block, _ := data["smart_routing"].(map[string]any)
 	cfg := SmartRoutingConfig{
 		Configured:     block != nil,
+		Enabled:        GetDispatchSmart(), // 主开关跟随「智排」
 		SimpleMaxChars: SmartRouteDefaultMaxChars,
 		SimpleMaxWords: SmartRouteDefaultMaxWords,
 		Arbitrate:      true,
 	}
 	if block != nil {
-		cfg.Enabled = msg.B(block, "enabled")
 		cfg.SimpleModel = msg.S(block, "simple_model")
 		cfg.StrongModel = msg.S(block, "strong_model")
 		cfg.Arbitrate = block["arbitrate"] == nil || msg.B(block, "arbitrate") // 缺省开
@@ -975,8 +983,7 @@ func GetSmartRouting() SmartRoutingConfig {
 			cfg.SimpleMaxWords = n
 		}
 	}
-	// 注意：块缺失时 Enabled 保持 false——旧 dispatch_smart 开关从未有实现，
-	// 若默认开启会让本地会话悄悄全量路由到云端，违背本地优先；显式配置才启用。
+	// 总开关跟随「智排」dispatch_smart（默认开）；关掉智排即完全停止分流。
 	if cfg.SimpleModel == "" {
 		cfg.SimpleModel = GetDispatchFlash()
 	}
@@ -987,7 +994,7 @@ func GetSmartRouting() SmartRoutingConfig {
 }
 
 // SetSmartRouting 归一并落盘 smart_routing 块（桌面设置面板用）；
-// 传 nil 删除该块（回退到 dispatch_smart 兼容行为）。
+// 传 nil 删除该块（只保留智排主开关）。
 func SetSmartRouting(block map[string]any) {
 	modelsMu.Lock()
 	defer modelsMu.Unlock()
@@ -998,9 +1005,6 @@ func SetSmartRouting(block map[string]any) {
 		return
 	}
 	out := map[string]any{}
-	if b, ok := block["enabled"].(bool); ok {
-		out["enabled"] = b
-	}
 	if s := strings.TrimSpace(msg.S(block, "simple_model")); s != "" {
 		out["simple_model"] = s
 	}
@@ -1588,6 +1592,38 @@ func UpdateModelMaxOutputTokens(key string, n int) *ModelConfig {
 		}
 	}
 	return nil
+}
+
+// SetModelDisabled 隐藏/禁用某个模型（"provider_id/model_id"）：true 时模型不再
+// 出现在选择器/派发里；false 取消隐藏。成功返回 true。
+func SetModelDisabled(key string, disabled bool) bool {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	pid, mid, ok := splitKey(key)
+	if !ok {
+		return false
+	}
+	for _, pv := range msg.L(data, "providers") {
+		p, ok := pv.(map[string]any)
+		if !ok || msg.S(p, "id") != pid {
+			continue
+		}
+		for _, mv := range msg.L(p, "models") {
+			m, ok := mv.(map[string]any)
+			if !ok || msg.S(m, "id") != mid {
+				continue
+			}
+			if disabled {
+				m["disabled"] = true
+			} else {
+				delete(m, "disabled")
+			}
+			saveModelsDataLocked(data)
+			return true
+		}
+	}
+	return false
 }
 
 func splitKey(key string) (pid, mid string, ok bool) {

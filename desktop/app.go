@@ -64,10 +64,7 @@ func (a *App) startup(ctx context.Context) {
 	tools.SetWorkspace(config.LoadLastWorkspace())
 	models, def := config.LoadModels()
 	if len(models) > 0 {
-		a.modelKey = def
-		if a.modelKey == "" {
-			a.modelKey = models[0].Key
-		}
+		a.modelKey = firstEnabledKey(models, def)
 	}
 	a.updateWindowTitle()
 	go a.scheduleLoop() // 定时任务调度器（desktop/schedule.go）
@@ -88,6 +85,26 @@ func (a *App) updateWindowTitle() {
 		title += " · " + m.DisplayName
 	}
 	runtime.WindowSetTitle(a.ctx, title)
+}
+
+// firstEnabledKey 返回首选默认模型，若为禁用/空则回退第一个未禁用模型。
+func firstEnabledKey(models []config.ModelConfig, pref string) string {
+	if pref != "" {
+		for i := range models {
+			if models[i].Key == pref && !models[i].Disabled {
+				return pref
+			}
+		}
+	}
+	for i := range models {
+		if !models[i].Disabled {
+			return models[i].Key
+		}
+	}
+	if len(models) > 0 {
+		return models[0].Key
+	}
+	return ""
 }
 
 func (a *App) domReady(ctx context.Context) {
@@ -198,6 +215,8 @@ type ModelInfo struct {
 	ReasoningEffort  string   `json:"reasoning_effort"`
 	ReasoningChoices []string `json:"reasoning_choices"`
 	ContextWindow    int      `json:"context_window"`
+	MaxOutputTokens  int      `json:"max_output_tokens"`
+	Disabled         bool     `json:"disabled"`
 	IsDefault        bool     `json:"is_default"`
 	IsCurrent        bool     `json:"is_current"`
 	Local            bool     `json:"local"`
@@ -213,8 +232,9 @@ func toModelInfo(m config.ModelConfig, def, cur string) ModelInfo {
 		DisplayName: m.DisplayName, BaseURL: m.BaseURL,
 		Vision: m.Vision, Reasoning: m.Reasoning,
 		ReasoningEffort: m.ReasoningEffort, ReasoningChoices: m.ReasoningChoices,
-		ContextWindow: m.ContextWindow,
-		IsDefault:     m.Key == def, IsCurrent: m.Key == cur,
+		ContextWindow: m.ContextWindow, MaxOutputTokens: m.MaxOutputTokens,
+		Disabled: m.Disabled,
+		IsDefault: m.Key == def, IsCurrent: m.Key == cur,
 		Local:    strings.Contains(m.BaseURL, "127.0.0.1") || strings.Contains(m.BaseURL, "localhost"),
 		Priced:   m.PriceInHitPerM > 0 || m.PriceInMissPerM > 0 || m.PriceOutPerM > 0,
 		PriceHit: m.PriceInHitPerM, PriceMiss: m.PriceInMissPerM, PriceOut: m.PriceOutPerM,
@@ -432,6 +452,26 @@ func (a *App) SetModelContextWindow(key string, win int) map[string]any {
 		a.runner.fanout(msg.Event{"type": "model:changed", "key": key, "context_window": win})
 	}
 	return map[string]any{"ok": true, "key": mc.Key, "context_window": mc.ContextWindow}
+}
+
+// SetModelDisabled 隐藏/禁用某个模型（当前模型被禁用时会自动切到下一个可用模型）。
+func (a *App) SetModelDisabled(key string, disabled bool) bool {
+	if !config.SetModelDisabled(key, disabled) {
+		return false
+	}
+	// 若禁用的是当前模型，自动切到下一个未禁用模型
+	if disabled && a.modelKey == key {
+		models, _ := config.LoadModels()
+		if nk := firstEnabledKey(models, ""); nk != "" {
+			a.SetCurrentModel(nk) // 内部已 emit model:changed 并刷新标题
+			return true
+		}
+	}
+	runtime.EventsEmit(a.ctx, "model:changed", a.modelKey)
+	if a.runner != nil {
+		a.runner.fanout(msg.Event{"type": "model:changed", "key": a.modelKey, "disabled": disabled})
+	}
+	return true
 }
 
 // SetModelMaxOutputTokens 设置模型的最大输出 token（0 清除，回退默认/窗口/4）。
@@ -1336,39 +1376,61 @@ func (a *App) GetBalance() map[string]any {
 		return map[string]any{"ok": false}
 	}
 	balMu.Lock()
-	if balFetching {
-		balMu.Unlock()
-		return map[string]any{"ok": false} // 已有请求在途，避免重复打接口
-	}
 	if balCache != nil && time.Since(balAt) < time.Minute {
 		cached := balCache
 		balMu.Unlock()
 		return cached
 	}
+	if balFetching {
+		balMu.Unlock()
+		if balCache != nil {
+			return balCache
+		}
+		return map[string]any{"ok": false}
+	}
 	balFetching = true
 	balMu.Unlock()
-	defer func() {
-		balMu.Lock()
-		balFetching = false
-		balMu.Unlock()
-	}()
 
+	// 绑定立即返回，网络请求放后台——避免启动时同步调余额接口卡住事件循环
+	//（对应“一运行就卡”：默认模型是 DeepSeek 时前端 init 会调 GetBalance）。
+	go func() {
+		defer func() {
+			balMu.Lock()
+			balFetching = false
+			balMu.Unlock()
+		}()
+		if out := fetchBalance(mc); out != nil {
+			balMu.Lock()
+			balCache = out
+			balAt = time.Now()
+			balMu.Unlock()
+			runtime.EventsEmit(a.ctx, "balance:updated", out)
+		}
+	}()
+	if balCache != nil {
+		return balCache
+	}
+	return map[string]any{"ok": false}
+}
+
+// fetchBalance 拉取 DeepSeek 余额（后台调用；失败返回 nil）。
+func fetchBalance(mc *config.ModelConfig) map[string]any {
 	key := mc.APIKey
 	if key == "" && len(mc.APIKeys) > 0 {
 		key = mc.APIKeys[0]
 	}
 	if key == "" || key == "local-noauth" {
-		return map[string]any{"ok": false}
+		return nil
 	}
 	req, err := http.NewRequest("GET", strings.TrimSuffix(mc.BaseURL, "/")+"/user/balance", nil)
 	if err != nil {
-		return map[string]any{"ok": false}
+		return nil
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return map[string]any{"ok": false}
+		return nil
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -1381,18 +1443,13 @@ func (a *App) GetBalance() map[string]any {
 		} `json:"balanceInfos"`
 	}
 	if json.Unmarshal(body, &parsed) != nil || parsed.TotalBalance == "" {
-		return map[string]any{"ok": false}
+		return nil
 	}
 	currency := "CNY"
 	if len(parsed.BalanceInfos) > 0 && parsed.BalanceInfos[0].Currency != "" {
 		currency = parsed.BalanceInfos[0].Currency
 	}
-	out := map[string]any{"ok": parsed.IsAvailable, "total": parsed.TotalBalance, "currency": currency}
-	balMu.Lock()
-	balCache = out
-	balAt = time.Now()
-	balMu.Unlock()
-	return out
+	return map[string]any{"ok": parsed.IsAvailable, "total": parsed.TotalBalance, "currency": currency}
 }
 
 // ---------------- 快捷输入（@文件 / !终端） ----------------
@@ -1718,4 +1775,272 @@ func (a *App) ReconnectMCP() {
 		})
 		runtime.EventsEmit(a.ctx, "mcp:reconnected", nil)
 	}()
+}
+
+// ---------------- 浏览器 MCP（chrome-devtools-mcp / playwright-mcp） ----------------
+
+const browserServerName = "browser"
+
+// BrowserType 浏览器后端类型
+type BrowserType string
+
+const (
+	BrowserTypeChromeDevTools BrowserType = "chrome-devtools"
+	BrowserTypePlaywright     BrowserType = "playwright"
+)
+
+// CheckBrowserMCPStatus 检查浏览器 MCP 状态：
+//   "not_installed" = 两种 MCP 都未安装
+//   "installed"     = 至少一种已安装但未连接
+//   "connected"    = 已连接
+func (a *App) CheckBrowserMCPStatus() string {
+	mgr := mcp.GetManager()
+	if mgr.IsServerConnected(browserServerName) {
+		return "connected"
+	}
+	// 检查是否安装了任一 MCP
+	hasChromeDevTools := checkMCPInstalled("chrome-devtools-mcp")
+	hasPlaywright := checkMCPInstalled("playwright-mcp") || checkMCPInstalled("@playwright/mcp")
+	if !hasChromeDevTools && !hasPlaywright {
+		return "not_installed"
+	}
+	return "installed"
+}
+
+// checkMCPInstalled 检查 MCP 是否已安装
+func checkMCPInstalled(name string) bool {
+	path, err := exec.LookPath(name)
+	if err != nil || path == "" {
+		// 尝试从 npm 全局目录查找
+		out, err := exec.Command("npm", "root", "-g").Output()
+		if err == nil && len(out) > 0 {
+			mcpPath := strings.TrimSpace(string(out)) + "/" + name
+			if _, err := os.Stat(mcpPath); err == nil {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// GetAvailableBrowsers 获取可用的浏览器后端列表
+func (a *App) GetAvailableBrowsers() []map[string]any {
+	var available []map[string]any
+	if checkMCPInstalled("chrome-devtools-mcp") {
+		available = append(available, map[string]any{
+			"type":        "chrome-devtools",
+			"name":        "Chrome DevTools",
+			"description": "使用已登录的 Chrome 浏览器（保留会话状态）",
+			"installed":   true,
+		})
+	} else {
+		available = append(available, map[string]any{
+			"type":        "chrome-devtools",
+			"name":        "Chrome DevTools",
+			"description": "需要安装: npm install -g chrome-devtools-mcp",
+			"installed":   false,
+		})
+	}
+	if checkMCPInstalled("playwright-mcp") || checkMCPInstalled("@playwright/mcp") {
+		available = append(available, map[string]any{
+			"type":        "playwright",
+			"name":        "Playwright",
+			"description": "使用 Playwright 管理的浏览器（自动启动，无需预装 Chrome）",
+			"installed":   true,
+		})
+	} else {
+		available = append(available, map[string]any{
+			"type":        "playwright",
+			"name":        "Playwright",
+			"description": "需要安装: npm install -g @playwright/mcp",
+			"installed":   false,
+		})
+	}
+	return available
+}
+
+// ConnectBrowserMCP 连接浏览器 MCP。browserType 可选 "chrome-devtools" 或 "playwright"。
+func (a *App) ConnectBrowserMCP(browserType string) map[string]any {
+	mgr := mcp.GetManager()
+	if mgr.IsServerConnected(browserServerName) {
+		return map[string]any{"ok": true, "msg": "已连接"}
+	}
+
+	bt := BrowserType(browserType)
+	if bt == "" {
+		bt = BrowserTypeChromeDevTools
+	}
+
+	// 获取 node 路径
+	if _, err := exec.LookPath("node"); err != nil {
+		return map[string]any{"ok": false, "error": "未找到 node，请先安装 Node.js"}
+	}
+
+	// 确定要连接的 MCP 可执行文件（bin），而不是 npm 包名。
+	// ⚠️ 不能用 `node -e require('...')`：那只加载库并立即退出，不会启动 stdio MCP
+	// 服务，导致 browse_* 工具永远暴露不出来（"我没有打开浏览器的工具"）。
+	// 必须启动包提供的 bin（chrome-devtools-mcp / playwright-mcp）才真正跑 MCP 服务。
+	binName := ""
+	switch bt {
+	case BrowserTypeChromeDevTools:
+		if !checkMCPInstalled("chrome-devtools-mcp") {
+			return map[string]any{"ok": false, "error": "chrome-devtools-mcp 未安装，请运行: npm install -g chrome-devtools-mcp"}
+		}
+		binName = "chrome-devtools-mcp"
+	case BrowserTypePlaywright:
+		if !checkMCPInstalled("playwright-mcp") {
+			return map[string]any{"ok": false, "error": "@playwright/mcp 未安装，请运行: npm install -g @playwright/mcp"}
+		}
+		binName = "playwright-mcp"
+	default:
+		return map[string]any{"ok": false, "error": "未知的浏览器类型: " + browserType}
+	}
+	binPath, err := exec.LookPath(binName)
+	if err != nil || binPath == "" {
+		return map[string]any{"ok": false, "error": "未找到 " + binName + " 可执行文件（不在 PATH）"}
+	}
+
+	// 更新 mcp.json 配置
+	data := config.LoadMCPServers()
+	servers, _ := data["servers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+	}
+	servers[browserServerName] = map[string]any{
+		"enabled": true,
+		"command": binPath,
+		"args":    []any{},
+	}
+	data["servers"] = servers
+	config.SaveMCPServers(data)
+
+	// 重连 MCP
+	go func() {
+		mcp.ResetManager()
+		mgr.Connect(func(line string) {
+			runtime.EventsEmit(a.ctx, "mcp:log", map[string]any{"line": line})
+		})
+		runtime.EventsEmit(a.ctx, "mcp:reconnected", nil)
+	}()
+
+	return map[string]any{"ok": true, "msg": "正在连接 " + binName + "..."}
+}
+
+// DisconnectBrowserMCP 断开浏览器 MCP。
+func (a *App) DisconnectBrowserMCP() {
+	mgr := mcp.GetManager()
+	if mgr.IsServerConnected(browserServerName) {
+		mgr.DisconnectServer(browserServerName)
+	}
+}
+
+// InstallBrowserMCP 自动安装浏览器 MCP server。
+// browserType: "chrome-devtools" | "playwright"。
+// 只负责安装（npm 包 + Playwright 内核）；写 mcp.json 与启动进程由前端调 ConnectBrowserMCP 处理。
+func (a *App) InstallBrowserMCP(browserType string) map[string]any {
+	bt := BrowserType(browserType)
+	var pkg string
+	switch bt {
+	case BrowserTypeChromeDevTools:
+		pkg = "chrome-devtools-mcp"
+	case BrowserTypePlaywright:
+		pkg = "@playwright/mcp"
+	default:
+		return map[string]any{"ok": false, "error": "未知浏览器类型: " + browserType}
+	}
+	// 已装则跳过 npm install（Playwright 仍会补内核）
+	installed := checkMCPInstalled(pkg) ||
+		(bt == BrowserTypePlaywright && (checkMCPInstalled("playwright-mcp") || checkMCPInstalled("@playwright/mcp")))
+	if !installed {
+		if _, err := exec.LookPath("node"); err != nil {
+			return map[string]any{"ok": false, "error": "未找到 node，请先安装 Node.js"}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "npm", "install", "-g", pkg).CombinedOutput()
+		if err != nil || ctx.Err() == context.DeadlineExceeded {
+			return map[string]any{"ok": false, "output": strings.TrimSpace(string(out))}
+		}
+	}
+	// Playwright 额外装 chromium 内核（幂等，已装则秒过）
+	if bt == BrowserTypePlaywright {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "npx", "playwright", "install", "chromium").CombinedOutput()
+		if err != nil && ctx.Err() != context.DeadlineExceeded {
+			return map[string]any{"ok": false, "output": strings.TrimSpace(string(out))}
+		}
+	}
+	return map[string]any{"ok": true, "msg": "已安装"}
+}
+
+// BrowserNavigate 导航到指定 URL。
+func (a *App) BrowserNavigate(url string) map[string]any {
+	mgr := mcp.GetManager()
+	if !mgr.IsServerConnected(browserServerName) {
+		return map[string]any{"error": "浏览器 MCP 未连接"}
+	}
+	// 尝试通用的 navigate 调用（工具名可能因 MCP 包而异）
+	result, _ := mgr.Call("mcp_browser_navigate", map[string]any{"url": url})
+	if result != "" && !strings.Contains(result, "错误") {
+		screenshot, _ := mgr.Call("mcp_browser_screenshot", nil)
+		return map[string]any{"ok": true, "result": result, "screenshot": screenshot}
+	}
+	// 备用：尝试 chrome-devtools 工具名
+	result, _ = mgr.Call("mcp_chrome_devtools_navigate", map[string]any{"url": url})
+	screenshot, _ := mgr.Call("mcp_chrome_devtools_screenshot", nil)
+	return map[string]any{"ok": true, "result": result, "screenshot": screenshot}
+}
+
+// BrowserScreenshot 获取当前页面截图。
+func (a *App) BrowserScreenshot() map[string]any {
+	mgr := mcp.GetManager()
+	if !mgr.IsServerConnected(browserServerName) {
+		return map[string]any{"error": "浏览器 MCP 未连接"}
+	}
+	result, _ := mgr.Call("mcp_browser_screenshot", nil)
+	if result == "" || strings.Contains(result, "错误") {
+		result, _ = mgr.Call("mcp_chrome_devtools_screenshot", nil)
+	}
+	return map[string]any{"ok": true, "screenshot": result}
+}
+
+// BrowserSnapshot 获取当前页面内容。
+func (a *App) BrowserSnapshot() map[string]any {
+	mgr := mcp.GetManager()
+	if !mgr.IsServerConnected(browserServerName) {
+		return map[string]any{"error": "浏览器 MCP 未连接"}
+	}
+	result, _ := mgr.Call("mcp_browser_snapshot", nil)
+	if result == "" || strings.Contains(result, "错误") {
+		result, _ = mgr.Call("mcp_chrome_devtools_snapshot", nil)
+	}
+	return map[string]any{"ok": true, "content": result}
+}
+
+// BrowserClick 点击页面元素。
+func (a *App) BrowserClick(selector string) map[string]any {
+	mgr := mcp.GetManager()
+	if !mgr.IsServerConnected(browserServerName) {
+		return map[string]any{"error": "浏览器 MCP 未连接"}
+	}
+	result, _ := mgr.Call("mcp_browser_click", map[string]any{"selector": selector})
+	if result == "" || strings.Contains(result, "错误") {
+		result, _ = mgr.Call("mcp_chrome_devtools_click", map[string]any{"selector": selector})
+	}
+	return map[string]any{"ok": true, "result": result}
+}
+
+// BrowserFill 填写表单字段。
+func (a *App) BrowserFill(selector, value string) map[string]any {
+	mgr := mcp.GetManager()
+	if !mgr.IsServerConnected(browserServerName) {
+		return map[string]any{"error": "浏览器 MCP 未连接"}
+	}
+	result, _ := mgr.Call("mcp_browser_fill", map[string]any{"selector": selector, "value": value})
+	if result == "" || strings.Contains(result, "错误") {
+		result, _ = mgr.Call("mcp_chrome_devtools_fill", map[string]any{"selector": selector, "value": value})
+	}
+	return map[string]any{"ok": true, "result": result}
 }

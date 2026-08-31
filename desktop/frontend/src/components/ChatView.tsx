@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { attLabel, isImgPath, cachedImageURL, useStore, t } from '../store'
+import ThinkingDots from './ThinkingDots'
 
 function MsgThumb({ path }: { path: string }) {
   const [url, setUrl] = useState('')
@@ -147,7 +148,7 @@ export default function ChatView() {
                 <div className="msg-body md">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{it.text}</ReactMarkdown>
                   {running && it === lastAssistant && (
-                    <div className="typing"><span /><span /><span /></div>
+                    <ThinkingDots className="block" />
                   )}
                 </div>
                 {it.text && <CopyBtn text={it.text} />}
@@ -157,7 +158,7 @@ export default function ChatView() {
           {running && !lastAssistant && (
             <div className="msg msg-assistant">
               <div className="who"><span className="dot">L</span><span>Local AI</span></div>
-              <div className="typing"><span /><span /><span /></div>
+              <ThinkingDots className="block" />
             </div>
           )}
         </div>

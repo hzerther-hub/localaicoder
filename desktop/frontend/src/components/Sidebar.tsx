@@ -3,6 +3,7 @@
 import { useMemo } from 'react'
 import { api } from '../bridge'
 import { useStore, t } from '../store'
+import ThinkingDots from './ThinkingDots'
 
 function timeAgo(ts: number): string {
   const d = Date.now() / 1000 - ts
@@ -110,7 +111,7 @@ export default function Sidebar() {
                 title={`${s.title} · 右键改名`}
               >
                 {s.id === sessionId && <span className="dot" />}
-                {s.id === runningSessionId && <span className="run-mark" title={t('运行中', 'running')}>▶</span>}
+                {s.id === runningSessionId && <span className="run-mark" title={t('运行中', 'running')}><ThinkingDots className="sm" /></span>}
                 <span className="tt">{s.title}</span>
                 <span className="ops">
                   <span className="tm">{timeAgo(s.updated)}</span>

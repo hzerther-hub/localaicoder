@@ -1,7 +1,11 @@
 // MCP 服务器管理面板（对齐 Tk ui_panel_mcp.py）：列表/增删改/启停/只读/重连。
+// 另含「浏览器 MCP」：下拉选 Chrome DevTools / Playwright，一键安装并自动连接。
 import { useEffect, useState } from 'react'
 import { api, onEvent } from '../bridge'
 import { useStore, t } from '../store'
+import ThinkingDots from './ThinkingDots'
+
+interface BrowserOption { type: string; name: string; description: string; installed: boolean }
 
 export default function MCPPanel() {
   const show = useStore((s) => s.showMCPPanel)
@@ -11,16 +15,54 @@ export default function MCPPanel() {
   const [name, setName] = useState('')
   const [command, setCommand] = useState('')
   const [url, setURL] = useState('')
+  // 浏览器 MCP 安装区
+  const [browsers, setBrowsers] = useState<BrowserOption[]>([])
+  const [browserType, setBrowserType] = useState('chrome-devtools')
+  const [browserStatus, setBrowserStatus] = useState('not_installed')
+  const [installing, setInstalling] = useState(false)
+  const [browserMsg, setBrowserMsg] = useState('')
 
   const reload = () => {
     api.getMCPServers().then((d) => setServers(d.servers || {}))
   }
+  const loadBrowsers = () => {
+    api.getAvailableBrowsers().then((b) => setBrowsers(b || []))
+    api.checkBrowserMCPStatus().then((s) => setBrowserStatus(s || 'not_installed'))
+  }
   useEffect(() => {
     if (!show) return
     reload()
-    const off = onEvent('mcp:log', (d) => setLog((p) => [...p.slice(-30), d.line]))
-    return off
+    loadBrowsers()
+    const offLog = onEvent('mcp:log', (d) => setLog((p) => [...p.slice(-30), d.line]))
+    // 连接/断开/重连事件触发即时刷新浏览器状态
+    const offRe = onEvent('mcp:reconnected', () => loadBrowsers())
+    // 面板打开期间轮询，让「✅ 已连接」徽标实时反映真实连接状态
+    const timer = setInterval(loadBrowsers, 2500)
+    return () => { offLog(); offRe(); clearInterval(timer) }
   }, [show])
+
+  // 安装浏览器 MCP → 成功自动连接 → 刷新状态
+  const doInstallBrowser = async () => {
+    if (installing) return
+    setInstalling(true); setBrowserMsg('')
+    try {
+      const r = await api.installBrowserMCP(browserType)
+      if (!r?.ok) {
+        setBrowserMsg(r?.error || r?.output || t('安装失败', 'Install failed'))
+        return
+      }
+      // 装完自动连接（复用 ConnectBrowserMCP 的配置写入 + 进程启动）
+      const c = await api.connectBrowserMCP(browserType)
+      setBrowserMsg(c?.ok
+        ? t('浏览器 MCP 已安装并连接', 'Browser MCP installed & connected')
+        : t('已安装，连接失败: ', 'Installed, connect failed: ') + (c?.error || ''))
+    } catch (e: any) {
+      setBrowserMsg(t('安装异常: ', 'Install error: ') + (e?.message || ''))
+    } finally {
+      loadBrowsers()
+      setInstalling(false)
+    }
+  }
   if (!show) return null
 
   const save = () => {
@@ -73,6 +115,36 @@ export default function MCPPanel() {
         ))}
 
         <div style={{ borderTop: '1px solid var(--border)', margin: '12px 0' }} />
+
+        {/* 浏览器 MCP：下拉选后端，一键安装 + 自动连接（对应 🌐 内置浏览器面板） */}
+        <div className="field">
+          <label>🌐 {t('浏览器 MCP', 'Browser MCP')}</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select value={browserType} onChange={(e) => setBrowserType(e.target.value)} style={{ flex: 1, minWidth: 160 }}>
+              {browsers.map((b) => (
+                <option key={b.type} value={b.type}>{b.name}</option>
+              ))}
+            </select>
+            <span className={`status-badge ${browserStatus}`}>
+              {browserStatus === 'connected' ? '✅ ' + t('已连接', 'Connected') :
+               browserStatus === 'installed' ? '● ' + t('已安装', 'Installed') :
+               '⚪ ' + t('未安装', 'Not installed')}
+            </span>
+            <button className="btn primary" disabled={installing} onClick={doInstallBrowser}
+              title={t('全局安装所选浏览器 MCP 并连接', 'Install selected browser MCP globally & connect')}>
+              {installing ? <ThinkingDots className="sm" /> : '⚡'} {t('安装并连接', 'Install & Connect')}
+            </button>
+          </div>
+          {browsers.find((b) => b.type === browserType)?.installed && !installing && (
+            <div className="hint">{t('已装，可直接在 🌐 浏览器面板连接', 'Installed; connect in Browser panel')}</div>
+          )}
+          {browserMsg && <div className="hint">{browserMsg}</div>}
+          <div className="mcp-cmd" style={{ marginTop: 4 }}>
+            {browsers.find((b) => b.type === browserType)?.description || ''}
+          </div>
+        </div>
+
+        <div style={{ borderTop: '1px solid var(--border)', margin: '10px 0' }} />
         <div className="field-row">
           <div className="field">
             <label>{t('名称', 'Name')}</label>

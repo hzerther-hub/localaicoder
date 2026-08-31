@@ -1,0 +1,21 @@
+{
+  "local": {
+    "endpoint": "http://127.0.0.1:8099/v1",
+    "api_key": "local-noauth",
+    "model": "ornith-1.5-35b"
+  },
+  "flash": {
+    "endpoint": "https://api.deepseek.com/v1",
+    "api_key": "在此填你的 DeepSeek 密钥",
+    "model": "deepseek-v4-flash"
+  },
+  "vision": {
+    "endpoint": "https://api.deepseek.com/v1",
+    "api_key": "在此填你的 DeepSeek 密钥",
+    "model": "deepseek-v4-flash-vision-exp"
+  },
+  "max_chars": 160,
+  "max_words": 28,
+  "arbitrate": true,
+  "arbitrate_timeout": 8
+}

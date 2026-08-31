@@ -60,6 +60,8 @@ interface UIState {
   prefs: Prefs | null
   models: ModelInfo[]
   currentModel: string
+  routeModel: string | null   // 智排本轮实际使用的模型 key（null = 本轮未路由）
+  routingActive: boolean      // 智排活动中（本轮已按复杂度自动选模型）
   mode: string
   workspace: string
   branch: string
@@ -108,6 +110,8 @@ interface UIState {
   setShowSchedulePanel: (v: boolean) => void
   showSettingsPanel: boolean
   setShowSettingsPanel: (v: boolean) => void
+  showBrowserPanel: boolean
+  setShowBrowserPanel: (v: boolean) => void
   showMobilePanel: boolean
   setShowMobilePanel: (v: boolean) => void
   balance: { ok: boolean; total: string; currency: string }
@@ -159,6 +163,8 @@ export const useStore = create<UIState>((set, get) => {
   prefs: null,
   models: [],
   currentModel: '',
+  routeModel: null,
+  routingActive: false,
   mode: 'always',
   workspace: '',
   branch: '',
@@ -211,6 +217,8 @@ export const useStore = create<UIState>((set, get) => {
   setShowSchedulePanel: (v) => set({ showSchedulePanel: v }),
   showSettingsPanel: false,
   setShowSettingsPanel: (v) => set({ showSettingsPanel: v }),
+  showBrowserPanel: false,
+  setShowBrowserPanel: (v) => set({ showBrowserPanel: v }),
   showMobilePanel: false,
   setShowMobilePanel: (v) => set({ showMobilePanel: v }),
   balance: { ok: false, total: '', currency: '' },
@@ -222,7 +230,8 @@ export const useStore = create<UIState>((set, get) => {
   init: async () => {
     const product = await api.getProductInfo()
     const prefs = await api.getPrefs()
-    const models = await api.listModels()
+    const allModels = await api.listModels()
+    const models = allModels.filter((m) => !m.disabled) // 隐藏/禁用的模型不出现在选择器
     const mode = await api.getPermissionMode()
     set({
       product,
@@ -242,6 +251,23 @@ export const useStore = create<UIState>((set, get) => {
     api.getCompactInfo().then((c) => { if (c) set({ compact: c }) })
     api.getBalance().then((b) => { if (b?.ok) set({ balance: { ok: true, total: b.total || '', currency: b.currency || '' } }) })
 
+    // 流式增量节流：把连续的 text delta 缓冲起来，每 ~90ms 才触发一次重渲染，
+    // 避免 GLM/Agnes 等模型以极小 token 分隔输出时，每 token 一次 set + ReactMarkdown
+    // 全量重渲染把界面卡死（表现为“回复过程中卡住，回复完成才恢复”）。
+    let streamText = ''
+    let streamTimer: any = null
+    const flushStream = () => {
+      streamTimer = null
+      if (!streamText) return
+      const items = [...get().items]
+      const last = items[items.length - 1]
+      if (last && last.kind === 'assistant') {
+        last.text += streamText
+        set({ items })
+      }
+      streamText = ''
+    }
+
     onEvent('agent:event', (e: AgentEvent) => {
       const st = get()
       // 后台会话事件分流：非当前会话的事件不进入本会话的 items/steps 渲染，
@@ -256,22 +282,20 @@ export const useStore = create<UIState>((set, get) => {
         case 'text': {
           const items = [...st.items]
           const last = items[items.length - 1]
-          if (last && last.kind === 'assistant') {
-            last.text += e.delta
-            set({ items })
-          } else {
-            items.push({ id: nextId++, kind: 'assistant', text: e.delta, reasoning: '' })
+          if (!(last && last.kind === 'assistant')) {
+            items.push({ id: nextId++, kind: 'assistant', text: '', reasoning: '' })
             set({ items })
           }
+          streamText += e.delta
+          if (!streamTimer) streamTimer = setTimeout(flushStream, 90)
           break
         }
         case 'reasoning': {
+          const last = st.items[st.items.length - 1]
+          if (!(last && last.kind === 'assistant' && !last.text)) break
           const items = [...st.items]
-          const last = items[items.length - 1]
-          if (last && last.kind === 'assistant' && !last.text) {
-            last.reasoning += e.delta
-            set({ items })
-          }
+          last.reasoning += e.delta
+          set({ items })
           break
         }
         case 'tool_start': {
@@ -346,6 +370,10 @@ export const useStore = create<UIState>((set, get) => {
         case 'model_switch':
           if (e.to?.key) set({ currentModel: e.to.key })
           break
+        case 'routing':
+          // 智排生效：记录本轮路由到的实际模型 + 活动态（选择器回显切换、徽标亮起）
+          set({ routingActive: true, routeModel: e.model?.key || null })
+          break
         case 'round':
           set({ round: num(e.n) })
           break
@@ -358,8 +386,11 @@ export const useStore = create<UIState>((set, get) => {
       // 更新后台任务列表（所有会话并发）
       const runs = (st.runs || []).filter((r) => r.sessionId !== sid)
       runs.push({ sessionId: sid, model: d?.model || '', paused: false, start: Date.now() })
-      // 仅当前会话启动时更新走表/轮次
-      set({ runs, turnStart: sid === st.sessionId ? Date.now() : st.turnStart, round: sid === st.sessionId ? 0 : st.round })
+      // 仅当前会话启动时更新走表/轮次；新一轮开始清掉上一轮智排态
+      set({ runs, turnStart: sid === st.sessionId ? Date.now() : st.turnStart,
+        round: sid === st.sessionId ? 0 : st.round,
+        routingActive: sid === st.sessionId ? false : st.routingActive,
+        routeModel: sid === st.sessionId ? null : st.routeModel })
       syncRunning()
     })
     onEvent('run:finished', (d) => {
@@ -378,7 +409,7 @@ export const useStore = create<UIState>((set, get) => {
       // 会话累计输入/缓存（平均命中率）与费用同步累计。
       const durSec = st.turnStart > 0 ? (Date.now() - st.turnStart) / 1000 : 0
       set({
-        approval: null, steps: [],
+        approval: null, steps: [], routingActive: false, routeModel: null,
         sessionTokens: st.sessionTokens + st.usage.total,
         sessionPrompt: st.sessionPrompt + st.usage.prompt,
         sessionCached: st.sessionCached + st.usage.cached,
@@ -411,12 +442,15 @@ export const useStore = create<UIState>((set, get) => {
     // 会话/项目结构变化（改名/删除/新建/切项目，含手机端触发）→ 桌面刷新侧栏
     onEvent('sessions:changed', () => { get().refreshSessions() })
     onEvent('model:changed', (k) => {
-      api.listModels().then((models) => set({ models, currentModel: k }))
+      api.listModels().then((all) => set({ models: all.filter((m) => !m.disabled), currentModel: k }))
       api.getCompactInfo().then((c) => { if (c) set({ compact: c }) })
     })
     onEvent('workspace:changed', (ws) => {
       set({ workspace: ws })
       api.gitBranch().then((b) => set({ branch: b || '' }))
+    })
+    onEvent('balance:updated', (b) => {
+      if (b?.ok) set({ balance: { ok: true, total: b.total || '', currency: b.currency || '' } })
     })
   },
 
@@ -440,6 +474,8 @@ export const useStore = create<UIState>((set, get) => {
         atts: atts, // 挂上附件，让 ChatView 能把图片渲染成缩略图
       }],
       attachments: [],
+      // 新一轮发送：清掉上一轮智排态（本轮是否路由由路由事件决定）
+      routingActive: false, routeModel: null,
       // 附件/识图计数（统计条用）+ 轮次
       attSent: get().attSent + atts.length,
       visionSent: get().visionSent + imgs,
@@ -477,12 +513,12 @@ export const useStore = create<UIState>((set, get) => {
 
   newSession: () => {
     api.newSession().then((id) => set({ sessionId: id }))
-    set({ items: [], usage: { ...emptyUsage }, sessionStart: Date.now(), attSent: 0, visionSent: 0, steps: [], sessionTokens: 0, turnCount: 0, lastThroughput: 0, sessionPrompt: 0, sessionCached: 0, sessionCost: 0 })
+    set({ items: [], usage: { ...emptyUsage }, sessionStart: Date.now(), attSent: 0, visionSent: 0, steps: [], sessionTokens: 0, turnCount: 0, lastThroughput: 0, sessionPrompt: 0, sessionCached: 0, sessionCost: 0, routingActive: false, routeModel: null })
     get().refreshSessions()
   },
 
   loadSession: (id) => {
-    set({ sessionId: id, sessionStart: Date.now(), attSent: 0, visionSent: 0, steps: [], sessionTokens: 0, turnCount: 0, lastThroughput: 0, sessionPrompt: 0, sessionCached: 0, sessionCost: 0, usage: { ...emptyUsage } })
+    set({ sessionId: id, sessionStart: Date.now(), attSent: 0, visionSent: 0, steps: [], sessionTokens: 0, turnCount: 0, lastThroughput: 0, sessionPrompt: 0, sessionCached: 0, sessionCost: 0, usage: { ...emptyUsage }, routingActive: false, routeModel: null })
     syncRunning() // 切换会话：重算是否运行中（该会话若在跑则提示，不锁编辑）
     api.loadSession(id).then((s) => {
       if (!s) return

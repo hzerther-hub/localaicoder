@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { api, LocalModelInfo, onEvent } from '../bridge'
 import { useStore, t } from '../store'
+import ThinkingDots from './ThinkingDots'
 
 interface ProviderView {
   id: string; name: string; base_url: string; api_key: string; api_format: string
@@ -198,7 +199,7 @@ export default function ModelPanel() {
                   <div style={{ display: 'flex', gap: 6 }}>
                     <input value={draft.base_url} onChange={(e) => setDraft({ ...draft, base_url: e.target.value })} placeholder="https://api.example.com/v1" />
                     <button className="btn" onClick={fetchModels} disabled={fetching || !draft.base_url}>
-                      {fetching ? '⏳' : '🔍'} {t('获取模型', 'Fetch models')}
+                      {fetching ? <ThinkingDots className="sm" /> : '🔍'} {t('获取模型', 'Fetch models')}
                     </button>
                   </div>
                   <label>API {t('格式', 'format')}</label>
@@ -244,11 +245,12 @@ export default function ModelPanel() {
                     return (
                       <div key={m.key}>
                       <div
-                        className={`mm-row${m.key === currentModel ? ' active' : ''}`}
-                        onClick={() => setModel(m.key)}
+                        className={`mm-row${m.key === currentModel ? ' active' : ''}${m.disabled ? ' disabled' : ''}`}
+                        onClick={() => { if (!m.disabled) setModel(m.key) }}
                       >
                         {dot && <span className="state-dot" style={{ background: dot.c }} title={dot.label} />}
                         <span className="mn">{m.display_name}</span>
+                        {m.disabled && <span className="mm-tag" title={t('已隐藏/禁用', 'Hidden/disabled')}>🙈</span>}
                         <select
                           className="mm-effort"
                           value={m.reasoning_effort || ''}
@@ -318,6 +320,15 @@ export default function ModelPanel() {
                             })
                           }}>{m.priced ? '💰' : '🏷'}</button>
                         <button className="mm-mini" onClick={(e) => { e.stopPropagation(); setModel(m.key) }}>◉</button>
+                        <button
+                          className="mm-mini hide"
+                          title={m.disabled ? t('重新启用（显示）', 'Enable (show)') : t('隐藏/禁用（从选择器移除，不参与派发）', 'Hide/disable (remove from selector)')}
+                          onClick={async (e) => {
+                            e.stopPropagation()
+                            await api.setModelDisabled(m.key, !m.disabled)
+                            reload(); refresh()
+                          }}
+                        >{m.disabled ? '✅' : '🙈'}</button>
                         <button
                           className="mm-mini del"
                           onClick={async (e) => {

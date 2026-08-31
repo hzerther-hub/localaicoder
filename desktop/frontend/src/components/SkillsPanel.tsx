@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { api, SkillInfo, SkillsSettings } from '../bridge'
 import { useStore, t } from '../store'
+import ThinkingDots from './ThinkingDots'
 
 export default function SkillsPanel() {
   const show = useStore((s) => s.showSkillsPanel)
@@ -162,7 +163,7 @@ export default function SkillsPanel() {
               'Install from a GitHub repo or a .md URL…')}
           />
           <button className="btn primary" disabled={installing || !installURL.trim()} onClick={doInstall}>
-            {installing ? '⏳' : '⬇'} {t('安装', 'Install')}
+            {installing ? <ThinkingDots className="sm" /> : '⬇'} {t('安装', 'Install')}
           </button>
         </div>
 

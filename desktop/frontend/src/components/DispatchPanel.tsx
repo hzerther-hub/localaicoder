@@ -57,7 +57,7 @@ export default function DispatchPanel() {
         </label>
         <label className="checkline">
           <input type="checkbox" checked={!!cfg.dispatch_smart} onChange={(e) => save({ dispatch_smart: e.target.checked })} />
-          {t('智排：按任务类型自动路由 / 识图预路由', 'Smart routing / vision pre-route')}
+          {t('智排：按提问复杂度自动分流（简单/复杂）', 'Smart routing: split simple/strong per turn')}
         </label>
         <label className="checkline">
           <input type="checkbox" checked={!!cfg.auto_cloud_fallback} onChange={(e) => save({ auto_cloud_fallback: e.target.checked })} />
@@ -97,10 +97,9 @@ export default function DispatchPanel() {
 
         <div style={{ borderTop: '1px solid var(--border)', margin: '14px 0 10px' }} />
         <div style={{ fontWeight: 600, marginBottom: 8 }}>🧭 {t('智能路由（简单/复杂轮次分流）', 'Smart routing (simple/strong per turn)')}</div>
-        <label className="checkline">
-          <input type="checkbox" checked={!!sr.enabled} onChange={(e) => saveSr({ enabled: e.target.checked })} />
-          {t('按提问复杂度自动选模型：简单走轻量、复杂走强力', 'Auto-pick lightweight vs strong model per turn')}
-        </label>
+        <div className="mm-sub" style={{ marginBottom: 8 }}>
+          {t('开关由上方「智排」控制；关闭智排则用所选模型直接聊天。', 'Gated by the "Smart routing" switch above; off = chat with the selected model.')}
+        </div>
         <div className="field-row">
           <div className="field">
             <label>{t('简单轮模型', 'Simple model')}</label>

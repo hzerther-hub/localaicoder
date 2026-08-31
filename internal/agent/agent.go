@@ -290,9 +290,9 @@ func localUnavailable(errText string) bool {
 }
 
 // cloudFallback 本地模型不可用时挑一个可用的云端回退模型；不适用返回 nil。
-// 仅对 gpulocal 本地模型生效；候选 flash → pro；受 auto_cloud_fallback 开关控制。
+// 仅对本机端点模型生效；候选 flash → pro；受 auto_cloud_fallback 开关控制。
 func (a *Agent) cloudFallback(errText string) *config.ModelConfig {
-	if a.Model == nil || !strings.HasPrefix(a.Model.Key, "gpulocal") {
+	if a.Model == nil || !config.IsLocalModelKey(a.Model.Key) {
 		return nil
 	}
 	if !localUnavailable(errText) || !config.GetAutoCloudFallback() {
@@ -300,8 +300,8 @@ func (a *Agent) cloudFallback(errText string) *config.ModelConfig {
 	}
 	cfg := config.GetDispatchConfig()
 	for _, key := range []string{msg.S(cfg, "dispatch_flash"), msg.S(cfg, "dispatch_pro")} {
-		if key == "" || strings.HasPrefix(key, "gpulocal") {
-			continue
+		if key == "" || config.IsLocalModelKey(key) {
+			continue // 跳过本地回退目标
 		}
 		if mc := config.FindModel(key); mc != nil && mc.APIKey != "" {
 			return mc
@@ -358,6 +358,26 @@ func (a *Agent) routeTurn(userMessage string, attachments []any) {
 	old := *a.Model
 	*a.Model = *mc
 	a.emit(msg.Event{"type": "routing", "decision": string(decision),
+		"from": old.Key, "model": modelInfo(mc)})
+}
+
+// routeVision 识图预路由：本轮有图片附件、但当前模型不带识图能力时，
+// 换到识图目标（本地识图大脑优先，否则云端识图）。能力路由，独立于智能路由开关。
+func (a *Agent) routeVision(attachments []any) {
+	if a.Model == nil || a.Model.Vision || !hasImageAttachment(attachments) {
+		return
+	}
+	key := tools.ResolveDispatchVisionKey()
+	if key == "" || key == a.Model.Key {
+		return
+	}
+	mc := config.FindModel(key)
+	if mc == nil {
+		return
+	}
+	old := *a.Model
+	*a.Model = *mc
+	a.emit(msg.Event{"type": "routing", "decision": "vision",
 		"from": old.Key, "model": modelInfo(mc)})
 }
 
@@ -427,6 +447,19 @@ func hasNonTextAttachment(attachments []any) bool {
 	return false
 }
 
+// hasImageAttachment 附件里是否有图片（识图预路由只关心真正的图片，音视频另算）。
+func hasImageAttachment(attachments []any) bool {
+	for _, av := range attachments {
+		if att, ok := av.(map[string]any); ok && msg.S(att, "kind") == "snippet" {
+			continue
+		}
+		if path, ok := av.(string); ok && media.Classify(path) == "image" {
+			return true
+		}
+	}
+	return false
+}
+
 // Run 同步运行整个 Agent 循环，返回最终文本。
 // history 非空则在其后追加本轮提问（多会话延续对话）；
 // attachments 为本轮附件（路径字符串或 snippet 字典）。
@@ -450,6 +483,8 @@ func (a *Agent) Run(userMessage string, history []msg.Msg, attachments []any) (s
 			userMessage += "\n\n" + strings.Join(extra, "\n")
 		}
 	}
+	// 识图预路由：链接取材也可能追加图片，故在取材之后判断本轮是否有图
+	a.routeVision(attachments)
 	userMsg := a.buildUserMessage(userMessage, attachments)
 	var messages []msg.Msg
 	if history != nil {

@@ -13,6 +13,7 @@ export interface ModelInfo {
   base_url: string; vision: boolean; reasoning: boolean; reasoning_effort: string
   reasoning_choices: string[]; context_window: number
   max_output_tokens: number // 最大输出 token（0 = 默认/窗口/4）
+  disabled: boolean // 已隐藏/禁用（不出现在选择器/派发）
   is_default: boolean; is_current: boolean; local: boolean
   priced?: boolean // 配置了官方定价（统计条费用显示开关）
   price_in_hit_per_m?: number; price_in_miss_per_m?: number; price_out_per_m?: number
@@ -85,6 +86,7 @@ export const api = {
   addProviderModel: (id: string, modelID: string, vision: boolean) => call<boolean>('AddProviderModel', id, modelID, vision),
   setModelCapability: (key: string, vision?: boolean, reasoning?: boolean, effort?: string) => call<any>('SetModelCapability', key, vision, reasoning, effort),
   setModelContextWindow: (key: string, win: number) => call<{ ok: boolean; key?: string; context_window?: number }>('SetModelContextWindow', key, win),
+  setModelDisabled: (key: string, disabled: boolean) => call<boolean>('SetModelDisabled', key, disabled),
   setModelMaxOutputTokens: (key: string, n: number) => call<{ ok: boolean; key?: string; max_output_tokens?: number }>('SetModelMaxOutputTokens', key, n),
   setModelPricing: (key: string, hit: number, miss: number, out: number) => call<{ ok: boolean }>('SetModelPricing', key, hit, miss, out),
   setCurrentModel: (k: string) => call<void>('SetCurrentModel', k),
@@ -200,6 +202,17 @@ export const api = {
   getSkillsSettings: () => call<SkillsSettings>('GetSkillsSettings'),
   setSkillsSettings: (enabled: boolean, distillModel: string) => call<void>('SetSkillsSettings', enabled, distillModel),
   rebuildIndex: () => call<Record<string, any>>('RebuildIndex'),
+  // 浏览器 MCP
+  checkBrowserMCPStatus: () => call<string>('CheckBrowserMCPStatus'),
+  getAvailableBrowsers: () => call<Array<{type: string; name: string; description: string; installed: boolean}>>('GetAvailableBrowsers'),
+  connectBrowserMCP: (browserType?: string) => call<{ok: boolean; msg?: string; error?: string}>('ConnectBrowserMCP', browserType || 'chrome-devtools'),
+  installBrowserMCP: (browserType: string) => call<{ok: boolean; msg?: string; output?: string; error?: string}>('InstallBrowserMCP', browserType),
+  disconnectBrowserMCP: () => call<void>('DisconnectBrowserMCP'),
+  browserNavigate: (url: string) => call<{ok: boolean; result?: string; screenshot?: string; error?: string}>('BrowserNavigate', url),
+  browserScreenshot: () => call<{ok: boolean; screenshot?: string; error?: string}>('BrowserScreenshot'),
+  browserSnapshot: () => call<{ok: boolean; content?: string; error?: string}>('BrowserSnapshot'),
+  browserClick: (selector: string) => call<{ok: boolean; result?: string; error?: string}>('BrowserClick', selector),
+  browserFill: (selector: string, value: string) => call<{ok: boolean; result?: string; error?: string}>('BrowserFill', selector, value),
 }
 
 export function onEvent(name: string, cb: (data: any) => void) {
@@ -333,6 +346,7 @@ async function mock<T>(method: string, args: any[]): Promise<T> {
     case 'SaveSkillDraft': return true as T
     case 'SaveSkillText': return true as T
     case 'InstallSkill': return { installed: ['demo-skill'], skipped: 0 } as T
+    case 'InstallBrowserMCP': return { ok: true, msg: 'installed' } as T
     case 'AcceptDraft': return true as T
     case 'DiscardDraft': return true as T
     case 'DeleteSkill': return true as T

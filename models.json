@@ -1,5 +1,6 @@
 {
   "default": "gpulocal-8080/qwen3-coder-30b",
+  "dispatch_model": "gpulocal-8099/ornith-1.5-35b",
   "providers": [
     {
       "id": "deepseek",

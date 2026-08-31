@@ -10,6 +10,13 @@
 .gobuildcache/
 .gomodcache/
 .zcode/
+.memsearch/
+
+# Claude Code 本机配置（含本机路径权限，勿提交）
+.claude/
+
+# opencode 远端（方案 A/B）机器级配置与本机数据（含 token，勿提交）
+.ocdata/
 
 # 桌面构建产物
 /desktop/bin/
@@ -38,3 +45,4 @@ __pycache__/
 /relay-server/opencode_bridge.json
 /opencode-relay/config.json
 /opencode-relay/opencode_bridge.json
+/zhipai-proxy/config.json

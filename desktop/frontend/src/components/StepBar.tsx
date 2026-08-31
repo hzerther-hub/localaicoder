@@ -3,6 +3,7 @@
 // 最多可见 6 条（内部滚动，新步骤自动滚入视野），整条可折叠。
 import { useEffect, useRef, useState } from 'react'
 import { useStore, t } from '../store'
+import ThinkingDots from './ThinkingDots'
 
 export default function StepBar() {
   const steps = useStore((s) => s.steps)
@@ -21,9 +22,8 @@ export default function StepBar() {
     <div className="stepbar">
       <div className="stepbar-head" onClick={() => setCollapsed(!collapsed)}>
         <span>
-          {running && <span className="running-dot" />}
           📋 {t('任务步骤', 'Steps')} {done}/{steps.length}
-          {running && <span className="running-chip">⏳ {t('进行中', 'running')}{round > 0 ? ` · ${t('第', 'round')} ${round} ${t('轮', '')}` : ''}</span>}
+          {running && <span className="running-chip"><ThinkingDots /> {t('进行中', 'running')}{round > 0 ? ` · ${t('第', 'round')} ${round} ${t('轮', '')}` : ''}</span>}
         </span>
         <span className="fold">{collapsed ? '▴' : '▾'}</span>
       </div>

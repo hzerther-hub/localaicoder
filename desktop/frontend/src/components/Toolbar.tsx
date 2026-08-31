@@ -13,6 +13,8 @@ export default function Toolbar() {
   const product = useStore((s) => s.product)
   const models = useStore((s) => s.models)
   const currentModel = useStore((s) => s.currentModel)
+  const routeModel = useStore((s) => s.routeModel)
+  const routingActive = useStore((s) => s.routingActive)
   const setModel = useStore((s) => s.setModel)
   const mode = useStore((s) => s.mode)
   const cycleMode = useStore((s) => s.cycleMode)
@@ -23,7 +25,9 @@ export default function Toolbar() {
   const showEditor = useStore((s) => s.showEditor)
   const setShowEditor = useStore((s) => s.setShowEditor)
   const features = product.features || {}
-  const current = models.find((m) => m.key === currentModel)
+  // 选择器显示本轮实际用到的模型：智排路由切换后回显真实模型（回合结束回到所选项）
+  const shownModel = routeModel || currentModel
+  const current = models.find((m) => m.key === shownModel)
 
   return (
     <div className="toolbar">
@@ -34,7 +38,7 @@ export default function Toolbar() {
 
       <select
         className="tb-select"
-        value={currentModel}
+        value={shownModel}
         onChange={(e) => setModel(e.target.value)}
         title={t('模型', 'Model')}
       >
@@ -92,7 +96,16 @@ export default function Toolbar() {
       )}
       <button className="tb-btn" onClick={() => useStore.getState().setShowChangesPanel(true)} title={t('Git 改动：会话变更/未提交/历史/分支', 'Git changes')}>🔀 {t('改动', 'Changes')}</button>
       <button className="tb-btn" onClick={() => useStore.getState().setShowMCPPanel(true)}>🔌 MCP</button>
-      <button className="tb-btn" onClick={() => useStore.getState().setShowDispatchPanel(true)} title={t('派发', 'Dispatch')}>⚡ {t('派发', 'Dispatch')}</button>
+      <button
+        className={`tb-btn${routingActive ? ' routing-on' : ' routing-off'}`}
+        onClick={() => useStore.getState().setShowDispatchPanel(true)}
+        title={routingActive
+          ? t('智排：本轮已按提问复杂度自动选模型', 'Smart routing active this turn')
+          : t('智排：未生效（按所选模型直接聊天），点击配置', 'Smart routing off; click to configure')}
+      >
+        ⚡ {t('智排', 'Smart')}
+        {routingActive && <ThinkingDots />}
+      </button>
       <button className="tb-btn" onClick={() => useStore.getState().setShowCachePanel(true)} title={t('缓存', 'Cache')}>🗄</button>
       <button className="tb-btn" onClick={() => useStore.getState().captureAndAttach()} title={t('截屏 Ctrl+Shift+F', 'Screenshot')}>📸</button>
       <button className="tb-btn" onClick={() => useStore.getState().setShowTerminal(true)} title={t('终端', 'Terminal')}>⌨ {t('终端', 'Terminal')}</button>
@@ -105,4 +118,5 @@ export default function Toolbar() {
 
 // 推理等级写入（避免组件顶部 import api 冗余）
 import { api as __api } from '../bridge'
+import ThinkingDots from './ThinkingDots'
 function apiSetEffort(key: string, effort: string) { __api.setReasoningEffort(key, effort) }

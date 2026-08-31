@@ -472,6 +472,30 @@ func (m *Manager) Connected() bool {
 	return m.connected
 }
 
+// IsServerConnected 检查指定服务器是否已连接。
+func (m *Manager) IsServerConnected(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.clients[name]
+	return ok
+}
+
+// DisconnectServer 断开指定服务器。
+func (m *Manager) DisconnectServer(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c, ok := m.clients[name]; ok {
+		c.Close()
+		delete(m.clients, name)
+		// 清理该服务器的 toolMap 条目
+		for k, v := range m.toolMap {
+			if v.server == name {
+				delete(m.toolMap, k)
+			}
+		}
+	}
+}
+
 // ToolMap 工具名映射（agent 用 len 判断）。
 func (m *Manager) ToolMapLen() int {
 	m.mu.RLock()

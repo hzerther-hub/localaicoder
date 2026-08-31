@@ -3,6 +3,7 @@
 // 吞吐 | 输出 | 缓存 | 本次/会话费用 | 轮次 | 上下文 | 压缩阈值 | 余额。
 // 无数据的字段显示 —，字段随模型或提供方报告自动填充。
 import { useStore, t } from '../store'
+import ThinkingDots from './ThinkingDots'
 
 // fmtK 大数缩写：1234 → 1.2k（单行紧凑显示）
 function fmtK(n: number): string {
@@ -61,7 +62,7 @@ export default function StatsBar() {
   return (
     <div className="usage-bar">
       <span className="model" title={`${mi?.display_name || currentModel}${running ? ` · ${t('运行中', 'running')}` : ''}`}>
-        <span className={`status-dot${running ? ' busy' : ''}`} />
+        {running ? <ThinkingDots className="sm busy" /> : <span className="status-dot" />}
         {modelName}
       </span>
       <i className="sep">·</i>

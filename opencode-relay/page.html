@@ -2,100 +2,83 @@
 <html lang="zh">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-  <title>opencode 中继</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+  <title>opencode</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <header>
-    <button id="btnS" aria-label="会话列表">☰</button>
-    <div id="brand">
-      <span class="word">Local AI Studio</span>
-      <span class="sub">Relay Console</span>
+  <!-- 侧栏：项目 / 会话 / 新建（桌面常驻，手机抽屉） -->
+  <aside id="side">
+    <div class="side-head">
+      <div class="brand"><span class="dot"></span>opencode</div>
+      <div class="projw"><select id="proj"></select></div>
+      <button id="sessNew" type="button">＋ 新会话</button>
     </div>
-    <select id="proj"></select>
-    <span id="run"></span>
-    <span id="conn"></span>
-  </header>
-
-  <!-- 模型 / 推理 / 权限 控制条 -->
-  <div class="hrow">
-    <div class="ctl"><span>模型</span><select id="model"></select></div>
-    <div class="ctl"><span>推理</span><select id="effort"></select></div>
-    <div class="ctl">
-      <span>权限</span>
-      <select id="modeSel">
+    <div class="side-grp">会话</div>
+    <div id="sessList"></div>
+    <div class="side-foot">
+      <div class="foot-row"><span>模型</span><select id="model"></select></div>
+      <div class="foot-row"><span>权限</span><select id="modeSel">
         <option value="always">总是允许</option>
         <option value="ask">询问</option>
         <option value="readonly">只读</option>
-      </select>
+      </select></div>
     </div>
+  </aside>
+  <div id="sideMask"></div>
+
+  <!-- 主区 -->
+  <div id="main">
+    <header>
+      <button id="btnS" aria-label="会话列表">☰</button>
+      <div id="sessName"></div>
+      <span id="run"></span>
+      <button id="btnStop" type="button" title="停止">■</button>
+      <span id="conn"></span>
+    </header>
+
+    <!-- 运行中会话横幅 -->
+    <div id="runsBar"></div>
+
+    <!-- 消息流（官方风格：角色标签 + 内联工具卡片） -->
+    <div id="log"><div class="empty">选择左侧会话开始，或点「＋ 新会话」</div></div>
+
+    <!-- 任务清单（todo） -->
+    <div id="steps" class="stepsbar"></div>
+
+    <!-- 权限审批条（ask 模式） -->
+    <div id="permBar">
+      <span class="perm-txt" id="permTxt">权限请求</span>
+      <span class="perm-btns">
+        <button type="button" data-p="deny">拒绝</button>
+        <button type="button" data-p="allow">允许一次</button>
+        <button type="button" data-p="always">总是允许</button>
+      </span>
+    </div>
+
+    <!-- opencode 提问（Question 工具）作答条 -->
+    <div id="qBar">
+      <div class="perm-txt" id="qTxt">opencode 提问</div>
+      <div id="qOpts"></div>
+    </div>
+
+    <!-- 待发送附件 -->
+    <div id="pendingAtts"></div>
+
+    <!-- 输入区 -->
+    <form id="f">
+      <button type="button" id="btnAtt" title="附件（图片/文件）">📎</button>
+      <input id="i" placeholder="让 opencode 干活…（/ 唤起命令）" autocomplete="off">
+      <button type="submit">↑</button>
+    </form>
+    <input type="file" id="fileAny" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0">
   </div>
-
-  <!-- 正在运行的会话（跨项目，点击跳转） -->
-  <div id="runsBar"></div>
-
-  <!-- 当前会话名 -->
-  <div id="sessName" class="sessname"></div>
-
-  <!-- 会话抽屉（顶部：项目同步方向配置） -->
-  <div id="drawer"><div class="panel">
-    <div id="syncRow"><span>项目同步</span><select id="syncSel">
-      <option value="pc2m">跟随 PC</option>
-      <option value="m2pc">控制 PC</option>
-    </select></div>
-    <div id="sessList"></div>
-  </div></div>
-
-  <!-- 消息日志 -->
-  <div id="log"><div class="empty">从左上选择一个会话开始</div></div>
-
-  <!-- 编程过程（点击底部按钮切换：过程面板 ⇋ 聊天） -->
-  <div id="codePanel">
-    <div id="codeHead"><span class="t">⌨ 编程过程</span><span id="codeRound"></span><button id="codeClear" type="button">清空</button></div>
-    <div id="codeLog"></div>
-  </div>
-  <div id="codeDock"><button id="codeBtn" type="button">⌨ 编程过程</button><span id="codeDot"></span></div>
 
   <!-- 斜杠命令菜单 -->
   <div id="slash"></div>
 
-  <!-- 任务步骤栏 -->
-  <div id="steps" class="stepsbar"></div>
-
-  <!-- 用量状态栏 -->
-  <div id="statsBar" class="statsbar-wrap">
-    <div id="stats" class="statsbar"></div>
-    <button id="statsToggle" type="button" aria-label="展开用量详情">▸</button>
-  </div>
-
-  <!-- 快捷操作 -->
-  <div id="qc">
-    <span data-p="列出当前项目的目录结构">列目录</span>
-    <span data-p="分析这个项目，找出可能的 BUG 并给出修复">找 BUG</span>
-    <span data-p="为最近的代码改动补充单元测试">写测试</span>
-    <span data-p="分析当前代码，给出重构建议">重构建议</span>
-  </div>
-
-  <!-- 待发送附件 -->
-  <div id="pendingAtts"></div>
-
-  <!-- 权限审批条（ask 模式） -->
-  <div id="permBar">
-    <span class="perm-txt" id="permTxt">权限请求</span>
-    <span class="perm-btns">
-      <button type="button" data-p="deny">拒绝</button>
-      <button type="button" data-p="allow">允许一次</button>
-      <button type="button" data-p="always">总是允许</button>
-    </span>
-  </div>
-
-  <!-- 输入区 -->
-  <form id="f">
-    <input id="i" placeholder="发消息…" autocomplete="off">
-    <button>发送</button>
-  </form>
-  <input type="file" id="fileAny" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0">
+  <!-- 图片放大查看 -->
+  <div id="lightbox"><img alt=""></div>
 
   <script src="js/main.js"></script>
 </body>

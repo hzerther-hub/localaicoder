@@ -195,6 +195,20 @@ def translate_event(ev, running_map):
                 "total": {"input": tok.get("input", 0), "output": tok.get("output", 0)},
             })
 
+    elif typ == "session.todo":
+        # opencode 真实任务清单（TodoTool 维护），手机端步骤栏直接吃
+        todo = p.get("todo") or p.get("todos") or []
+        if isinstance(todo, list) and todo:
+            frames.append({"type": "todo", "sessionId": sid, "todos": todo})
+
+    elif typ == "question.asked":
+        # opencode Question 工具向用户提问：转手机审批条（选项按钮作答）
+        frames.append({"type": "question_request", "id": p.get("id"),
+                       "sessionID": sid, "questions": p.get("questions") or []})
+
+    elif typ in ("question.replied", "question.rejected"):
+        frames.append({"type": "question_done", "id": p.get("id")})
+
     return frames
 
 
@@ -223,18 +237,27 @@ class Bridge:
         self._dir_by_sid = {}      # session_id -> 创建目录（session 级调用按目录作用域）
         self.pending_perms = {}    # permissionID -> Permission(ask 模式等待手机审批)
         self.perm_timers = {}      # permissionID -> TimerHandle(超时自动拒绝)
+        self._provider_cache = None  # /config/providers 懒加载缓存
+        self._missed = set()       # 断线期间错过帧的会话，重连后通知手机重拉
         self.insecure = cfg["relay"].get("insecure", False)
 
     # ---- 发送到手机（经中继广播给该设备所有手机页） ----
     async def _send(self, frame):
         ws = self.ws
+        sid = frame.get("session") or frame.get("sessionID") or frame.get("sessionId")
         if ws is None:
-            return
+            if sid:
+                self._missed.add(sid)  # 断线窗口：记下会话，重连后补发刷新通知
+            return False
         async with self.wlock:
             try:
                 await ws.send(json.dumps(frame, ensure_ascii=False))
+                return True
             except Exception as e:
                 log(f"下行失败: {e}")
+                if sid:
+                    self._missed.add(sid)
+                return False
 
     # ---- /event SSE 订阅线程：解析 data: 帧，丢进 asyncio 队列 ----
     def _sse_thread(self):
@@ -271,7 +294,12 @@ class Bridge:
                     # 权限请求：always/readonly 自动应答，ask 转发给手机审批
                     await self._handle_permission_asked(ev.get("properties") or {})
                     continue
+                p = ev.get("properties") or {}
+                psid = p.get("sessionID") or p.get("sessionId")
                 for f in translate_event(ev, self.running_map):
+                    # 补 sessionId：断线记账 + 手机端会话过滤都依赖它
+                    if psid and not (f.get("session") or f.get("sessionID") or f.get("sessionId")):
+                        f["sessionId"] = psid
                     await self._send(f)
             except Exception as e:
                 log(f"事件翻译失败: {e}")
@@ -338,7 +366,8 @@ class Bridge:
                     extra["ssl"] = ssl.create_default_context()
                     extra["ssl"].check_hostname = False
                     extra["ssl"].verify_mode = ssl.CERT_NONE
-                conn = await websockets.connect(url, open_timeout=15, **extra)
+                conn = await websockets.connect(url, open_timeout=15,
+                                                ping_interval=20, ping_timeout=10, **extra)
             except Exception as e:
                 log(f"连接中继失败: {e}；{backoff}s 后重试")
                 await asyncio.sleep(backoff)
@@ -350,6 +379,12 @@ class Bridge:
             await self._send({"type": "hello", "workspace": self.workspace,
                               "model": self.current_model, "mode": self.mode,
                               "version": "opencode-bridge/1.0"})
+            # 断线补偿：哑管道不缓存帧，通知手机端重拉错过帧的会话（openS 会重拉全量消息）
+            if self._missed:
+                missed, self._missed = set(self._missed), set()
+                for msid in missed:
+                    await self._send({"type": "session:opened", "id": msid})
+                log(f"断线补偿：通知手机重拉 {len(missed)} 个会话")
             try:
                 async for raw in conn:
                     try:
@@ -421,6 +456,23 @@ class Bridge:
             elif t == "new_session":
                 # 在指定目录新建会话（手机端选子目录后一键开聊）
                 await self._new_session((frame.get("dir") or "").strip(), rid)
+            elif t == "commands":
+                # opencode 真实命令列表（自定义命令/skill/mcp），供手机斜杠菜单
+                await self._send(await self._commands(rid))
+            elif t == "command":
+                # 执行斜杠命令：内建映射 + 自定义 command 转发
+                await self._handle_command(frame)
+            elif t == "question_reply":
+                # 手机端对 opencode 提问的作答：answers 与 questions 等长，每项为选中 label 列表
+                qid = frame.get("id")
+                answers = frame.get("answers") or []
+                if qid:
+                    await asyncio.to_thread(self.oc.post, f"/question/{qid}/reply",
+                                            {"answers": answers})
+            elif t == "question_reject":
+                qid = frame.get("id")
+                if qid:
+                    await asyncio.to_thread(self.oc.post, f"/question/{qid}/reject", {})
         except Exception as e:
             log(f"处理 {t} 失败: {e}")
             traceback.print_exc()
@@ -471,27 +523,77 @@ class Bridge:
             await self._send({"type": "error", "delta": f"新建会话失败：{e}", "rid": rid})
 
     def _model_obj(self):
-        """把 'providerID/modelID' 字符串转成 opencode 期望的 model 对象。"""
+        """'providerID/modelID' 字符串转 opencode 期望的 model 对象（同步版，仅带前缀时可用）。"""
         k = self.current_model or ""
         if "/" in k:
             pid, mid = k.split("/", 1)
             return {"providerID": pid, "modelID": mid}
         return None
 
+    async def _ensure_providers(self):
+        """懒加载 provider 清单（用于解析无前缀的模型名）。"""
+        if self._provider_cache is None:
+            try:
+                d = await asyncio.to_thread(self.oc.get, "/config/providers")
+                self._provider_cache = (d or {}).get("providers") or []
+            except Exception:
+                self._provider_cache = []
+        return self._provider_cache
+
+    async def _resolve_model(self):
+        """当前模型 → {providerID, modelID}；无前缀时在 provider 清单里找唯一归属。"""
+        k = (self.current_model or "").strip()
+        if not k:
+            return None
+        if "/" in k:
+            pid, mid = k.split("/", 1)
+            return {"providerID": pid, "modelID": mid}
+        for prov in await self._ensure_providers():
+            if isinstance(prov, dict) and k in (prov.get("models") or {}):
+                return {"providerID": prov.get("id"), "modelID": k}
+        return None
+
     async def _handle_send(self, frame):
         sid = frame.get("session")
         text = (frame.get("text") or "").strip()
-        if not sid or not text:
+        atts = [a for a in (frame.get("atts") or [])
+                if isinstance(a, dict) and (a.get("name") or "").strip() and (a.get("data") or "")]
+        if not text and not atts:
             return
-        # 先向手机回显这条用户消息（带图片缩略图），模式同 desktop/relay.go
-        atts = frame.get("atts") or []
-        imgs = []
+        # 附件分流（对齐 desktop/relay.go）：图片→opencode 原生多模态 parts；
+        # 其他文件→落盘工作区 media/，路径附进 prompt 让 agent 用工具读。
+        imgs, names, paths = [], [], []
         for a in atts:
-            if isinstance(a, dict):
-                d = a.get("data") or ""
-                if d.startswith("data:image"):
-                    imgs.append(d)
-        await self._send({"type": "user_message", "session": sid, "text": text, "images": imgs})
+            name = (a.get("name") or "").strip()
+            d = a.get("data") or ""
+            names.append(name)
+            if d.startswith("data:image"):
+                imgs.append(d)
+            else:
+                p = await asyncio.to_thread(_save_upload, self.workspace, name, d)
+                if p:
+                    paths.append(p)
+                else:
+                    log(f"附件落盘失败: {name}")
+        # 无会话直接发（空项目开聊）：先在当前工作区建会话
+        if not sid:
+            try:
+                title = text[:40] or (names[0][:40] if names else "新会话")
+                new = await asyncio.to_thread(
+                    self.oc.post, scoped("/session", self.workspace), {"title": title})
+            except Exception as e:
+                await self._send({"type": "error", "delta": f"新建会话失败：{e}"})
+                return
+            sid = (new or {}).get("id", "")
+            if not sid:
+                await self._send({"type": "error", "delta": "新建会话失败"})
+                return
+            self._dir_by_sid[sid] = self.workspace
+            log(f"新建会话 {sid} @ {self.workspace}")
+            await self._send({"type": "sessions:changed"})
+        # 回显带 📎 附件名（模式同 desktop/relay.go：显示文本带标签，prompt 不带）
+        disp = text + (("\n\n📎 " + "  ".join(names)) if names else "")
+        await self._send({"type": "user_message", "session": sid, "text": disp, "images": imgs})
 
         # 确认/创建会话（新会话 born 在当前工作区）
         if not await asyncio.to_thread(self.oc.session_exists, sid):
@@ -500,15 +602,14 @@ class Bridge:
             self._dir_by_sid[sid] = self.workspace
         self.current = sid
 
-        parts = [{"type": "text", "text": text}]
+        prompt = text + (("\n\n" + "\n".join("附件文件（可用工具读取）：" + p for p in paths)) if paths else "")
+        parts = [{"type": "text", "text": prompt}] if prompt else []
         for a in atts:
-            if not isinstance(a, dict):
-                continue
             d = a.get("data") or ""
             if d.startswith("data:image"):
                 parts.append(_image_part(d, a.get("name")))
         body = {"parts": parts}
-        m = self._model_obj()
+        m = await self._resolve_model()
         if m:
             body["model"] = m
         log(f"send -> session={sid} 模型={self.current_model or '(默认)'} 工作区={self._dir_by_sid.get(sid) or self.workspace}")
@@ -532,6 +633,103 @@ class Bridge:
     async def _handle_rename(self, sid, title):
         if sid and title and title.strip():
             await asyncio.to_thread(self.oc.patch, f"/session/{sid}", {"title": title.strip()})
+
+    # ---- opencode 斜杠命令：列表下发 + 执行 ----
+    async def _commands(self, rid):
+        """GET /command：真实命令清单（.opencode/command 自定义、skill、mcp 来源）。"""
+        try:
+            data = await asyncio.to_thread(self.oc.get, scoped("/command", self.workspace))
+        except Exception:
+            data = []
+        out = [{"name": c.get("name") or "", "description": (c.get("description") or "").strip(),
+                "agent": c.get("agent") or "", "source": c.get("source") or "command"}
+               for c in data or [] if isinstance(c, dict) and c.get("name")]
+        return {"type": "commands", "rid": rid, "commands": out}
+
+    async def _ensure_session(self, sid, title):
+        """会话为空或已不存在时，在当前工作区新建一个；返回可用 sid。"""
+        if sid and await asyncio.to_thread(self.oc.session_exists, sid):
+            return sid
+        new = await asyncio.to_thread(self.oc.post, scoped("/session", self.workspace), {"title": title})
+        nid = (new or {}).get("id", "")
+        if nid:
+            self._dir_by_sid[nid] = self.workspace
+            self.current = nid
+            await self._send({"type": "sessions:changed"})
+        return nid
+
+    async def _handle_command(self, frame):
+        """手机端 /xxx：内建命令映射到 opencode 专有端点，其余转发 POST /session/:id/command。"""
+        sid = frame.get("session")
+        cmd = (frame.get("command") or "").strip().lstrip("/")
+        args = (frame.get("arguments") or "").strip()
+        if not cmd:
+            return
+        sid = await self._ensure_session(sid, f"/{cmd} {args}".strip()[:40])
+        if not sid:
+            await self._send({"type": "error", "delta": f"/{cmd} 失败：无法创建会话"})
+            return
+        directory = self._dir_by_sid.get(sid) or self.workspace
+        try:
+            if cmd == "undo":       # 撤销最近一条消息（连带回滚其文件改动）
+                msgs = await asyncio.to_thread(self.oc.get, scoped(f"/session/{sid}/message", directory))
+                mid = ((msgs or [{}])[-1].get("info") or {}).get("id") or ""
+                if not mid:
+                    await self._send({"type": "error", "delta": "没有可撤销的消息"})
+                    return
+                await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/revert", directory),
+                                        {"messageID": mid})
+            elif cmd == "redo":     # 恢复被 undo 的消息
+                await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/unrevert", directory), {})
+            elif cmd == "compact":  # 手动压缩上下文（summarize）
+                m = await self._resolve_model()
+                if not m:
+                    await self._send({"type": "error", "delta": "compact 需要先选模型（providerID/modelID）"})
+                    return
+                await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/summarize", directory),
+                                        {"providerID": m["providerID"], "modelID": m["modelID"]})
+            elif cmd == "share":
+                s = await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/share", directory), {})
+                sh = (s or {}).get("share") if isinstance(s, dict) else None
+                link = (sh or {}).get("url") or (s or {}).get("url") or ""
+                await self._send({"type": "text",
+                                  "delta": f"🔗 分享链接：{link}" if link else "已分享（未返回链接）"})
+                return
+            elif cmd == "unshare":
+                await asyncio.to_thread(self.oc.delete, scoped(f"/session/{sid}/share", directory))
+            elif cmd == "diff":     # 本次会话的代码改动（专用端点，回退 vcs 全局 diff）
+                try:
+                    d = await asyncio.to_thread(
+                        self.oc.get, scoped(f"/session/{sid}/diff", directory))
+                except Exception:
+                    d = await asyncio.to_thread(self.oc.get, scoped("/vcs/diff", directory))
+                if isinstance(d, list):
+                    parts = []
+                    for it in d:
+                        if not isinstance(it, dict):
+                            continue
+                        f = it.get("file") or it.get("path") or ""
+                        t = it.get("text") or it.get("diff") or ""
+                        if t:
+                            parts.append(f"--- {f}\n{t}" if f else t)
+                        elif f:
+                            parts.append(f"（有改动）{f}")
+                    txt = "\n".join(parts)
+                else:
+                    txt = d if isinstance(d, str) else json.dumps(d, ensure_ascii=False, indent=1)
+                if len(txt) > 4000:
+                    txt = txt[:4000] + "\n…（已截断）"
+                await self._send({"type": "diff", "session": sid, "delta": txt or "（无改动）"})
+                return
+            elif cmd == "init":     # 让 opencode 分析代码库生成 AGENTS.md
+                await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/init", directory), {})
+            else:                   # 自定义命令（.opencode/command、skill、mcp）
+                await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/command", directory),
+                                        {"command": cmd, "arguments": args})
+        except Exception as e:
+            await self._send({"type": "error", "delta": f"/{cmd} 失败：{e}"})
+            return
+        await self._send({"type": "command_result", "session": sid, "command": cmd, "ok": True})
 
     # ---- 手机页需要的几类应答帧 ----
     def _git_branch(self):
@@ -635,6 +833,25 @@ def _image_part(dataurl, name):
         if head.startswith("data:") and ";" in head:
             mime = head[5:].split(";")[0]
     return {"type": "file", "mime": mime, "filename": (name or "image.png"), "url": dataurl}
+
+
+def _save_upload(ws_dir, name, data):
+    """dataURL 落盘到 <工作区>/media/<纳秒时间戳>-<文件名>，返回路径；失败返回 None。
+    对齐 desktop/relay.go savePhoneUploads：非图片附件交给 agent 用工具读。"""
+    try:
+        raw = data.split(",", 1)[1] if "," in data else data
+        dec = base64.b64decode(raw)
+        base = os.path.basename(name) or "upload.bin"  # 防目录穿越
+        if base in (".", "/"):
+            base = "upload.bin"
+        dirp = os.path.join(ws_dir, "media")
+        os.makedirs(dirp, exist_ok=True)
+        p = os.path.join(dirp, f"{time.time_ns()}-{base}")
+        with open(p, "wb") as f:
+            f.write(dec)
+        return p
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

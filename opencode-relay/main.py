@@ -64,6 +64,26 @@ async def page(d: str = Query(...)) -> Response:
         return HTMLResponse(f.read())
 
 
+@app.get("/")
+async def root_page(d: str = Query(...)) -> Response:
+    """根路径控制台（与 /s/ 同页同 token）：https://op.mei.biz/?d=<token>"""
+    if not token_ok(d):
+        return Response(status_code=403)
+    with open(PAGE_FILE, encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+
+
+@app.get("/css/{name}")
+async def css_root(name: str) -> Response:
+    """根路径页面引用的相对静态资源 /css/*、/js/*。"""
+    return await static_file("css", name)
+
+
+@app.get("/js/{name}")
+async def js_root(name: str) -> Response:
+    return await static_file("js", name)
+
+
 STATIC_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml", ".ico": "image/x-icon"}
 

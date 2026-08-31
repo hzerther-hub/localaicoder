@@ -1,4 +1,4 @@
 {
   "listen": "127.0.0.1:8999",
-  "device_tokens": ["请粘贴桌面端/桥的 64 位 device token，或本机测试用 testtoken123"]
+  "device_tokens": [""]
 }

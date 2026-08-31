@@ -113,6 +113,13 @@ form input:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
 form button{background:linear-gradient(135deg,#6c5ce7,#8f6cf0);border:0;border-radius:13px;color:#fff;padding:0 20px;font-size:15px;font-weight:600;cursor:pointer;box-shadow:0 4px 16px rgba(108,92,231,.24);transition:transform .1s,box-shadow .15s}
 form button:active{transform:translateY(1px)}
 
+/* ---------- 运行中会话横幅 ---------- */
+#runsBar{display:none;gap:7px;padding:7px 12px;background:rgba(55,213,195,.06);border-bottom:1px solid rgba(55,213,195,.18);overflow-x:auto;scrollbar-width:none}
+#runsBar.on{display:flex}
+#runsBar::-webkit-scrollbar{display:none}
+#runsBar .rr{flex:none;font-family:var(--mono);font-size:11.5px;color:var(--signal);background:rgba(55,213,195,.09);border:1px solid rgba(55,213,195,.3);border-radius:14px;padding:4px 11px;cursor:pointer;white-space:nowrap;letter-spacing:.01em}
+#runsBar .rr.cur{color:#e7fbff;background:linear-gradient(135deg,rgba(55,213,195,.2),rgba(55,213,195,.08))}
+#runsBar .rr:active{background:rgba(55,213,195,.16)}
 /* ---------- 美化下拉（原生 select 隐藏为数据源） ---------- */
 .ddw{position:relative;min-width:0;width:100%}
 header .ddw{flex:1;width:auto}
@@ -137,6 +144,9 @@ body.working #codeDot{background:var(--signal);animation:pulse 1.5s ease-in-out 
 #codePanel{display:none;flex-direction:column;flex:1;min-height:0;background:#0a0f16}
 body.coding #log{display:none}
 body.coding #codePanel{display:flex}
+/* 编程模式沉浸：只留过程面板与底部输入框，其余界面元素全部隐藏 */
+body.coding header,body.coding .hrow,body.coding #runsBar,body.coding #sessName,
+body.coding #steps,body.coding #statsBar,body.coding #qc{display:none!important}
 #codeHead{display:flex;align-items:center;gap:9px;padding:8px 13px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text-faint)}
 #codeHead .t{color:var(--signal);font-weight:600;letter-spacing:.06em}
 #codeRound{flex:1;text-align:right}

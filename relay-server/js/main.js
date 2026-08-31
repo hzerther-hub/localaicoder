@@ -8,7 +8,15 @@ const pend={};
 const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML;};
 const ago=ts=>{const d=Date.now()/1000-ts;if(d<60)return '刚刚';if(d<3600)return Math.floor(d/60)+'分';if(d<86400)return Math.floor(d/3600)+'时';return Math.floor(d/86400)+'天';};
 function setConn(s){const el=$('conn');if(el)el.className=s;}
-function setSessName(){const el=$('sessName');if(!el)return;const i=ALL.findIndex(x=>x.id===sid);const t=i>=0?ALL[i].title:'';el.textContent=t?('会话：'+t):'（选择一个会话）';}
+function setSessName(){const el=$('sessName');if(!el)return;const i=ALL.findIndex(x=>x.id===sid);const t=i>=0?ALL[i].title:'';const w=i>=0?((ALL[i].workspace||'').split('/').filter(Boolean).pop()||''):'';
+ el.textContent=t?('会话：'+t+(w?'  ·  '+w:'')):'（选择一个会话）';}
+// 运行中会话横幅：跨项目列出所有 running 的会话（标题 · 目录），点击跳转过去看
+function renderRuns(){const bar=$('runsBar');if(!bar)return;
+ const list=ALL.filter(x=>x.running);
+ if(!list.length){bar.classList.remove('on');bar.innerHTML='';return;}
+ bar.classList.add('on');
+ bar.innerHTML=list.map(x=>'<span class="rr'+(x.id===sid?' cur':'')+'" data-id="'+x.id+'">▶ '+esc((x.title||'（无标题）').slice(0,24))+' · '+esc((x.workspace||'').split('/').filter(Boolean).pop()||'?')+'</span>').join('');}
+$('runsBar').onclick=e=>{const c=e.target.closest('.rr');if(!c)return;projPin=false;openS(c.dataset.id,true);};
 function req(o){return new Promise(res=>{const id=++rid;pend[id]=res;ws.send(JSON.stringify(Object.assign(o,{rid:id})));});}
 function addMsgImgs(container,imgs){if(!imgs||!imgs.forEach||!imgs.length)return;const w=document.createElement('div');w.className='msg-thumbs';imgs.forEach(u=>{const im=document.createElement('img');im.className='msg-img';im.src=u;w.appendChild(im);});container.appendChild(w);log.scrollTop=log.scrollHeight;}
 function renderMsg(x){
@@ -96,7 +104,7 @@ function renderSess(){
   +'<span class="ago">'+ago(x.updated)+'</span></div>';});
  $('sessList').innerHTML=h||'<div class="gr">该项目暂无会话</div>';
 }
-function badge(){const c=$('conn');if(c)c.classList.toggle('working',runs.size>0);document.body.classList.toggle('working',runs.size>0);$('run').textContent=runs.size?'▶ '+runs.size:'';}
+function badge(){const c=$('conn');if(c)c.classList.toggle('working',runs.size>0);document.body.classList.toggle('working',runs.size>0);$('run').textContent=runs.size?'▶ '+runs.size:'';renderRuns();}
 function mark(id,on){ALL.forEach(x=>{if(x.id===id)x.running=on});renderSess();}
 // 顶部项目下拉同步到指定工作区
 function syncProj(w){w=w||'';if(!w||w===wsCur)return;wsCur=w;const sel=$('proj');for(const o of sel.options){if(o.value===w){sel.value=w;break;}}renderSess();}

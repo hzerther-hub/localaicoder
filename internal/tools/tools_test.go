@@ -13,6 +13,11 @@ func setup(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	config.SetDir(dir)
+	// 关掉两个条件工具开关，保证 ToolSchemas()/ReadOnlySchemas() 的集合
+	// 在测试环境下稳定（否则 call_model 会因本地健康探测结果漂移，
+	// kb_search 会随 KB 开关变化，导致 golden 计数不确定）。
+	config.SetModelDispatch(false)
+	config.SetKBEnabled(false)
 	t.Cleanup(func() { config.SetDir("") })
 	return dir
 }
@@ -172,6 +177,7 @@ func TestUnknownTool(t *testing.T) {
 }
 
 func TestIsWriteToolAndSchemas(t *testing.T) {
+	setup(t) // 关掉条件工具，让集合数稳定
 	if !IsWriteTool("write_file") || !IsWriteTool("run_shell") {
 		t.Fatal("write_file/run_shell 应为可写")
 	}

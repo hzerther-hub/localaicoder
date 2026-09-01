@@ -52,7 +52,7 @@ start_relay() {
   if curl -sf "http://127.0.0.1:$RELAY_PORT/s/?d=${RELAY_TOKEN}" >/dev/null 2>&1; then
     echo "opencode-relay 已在 $RELAY_PORT"
   else
-    ( cd "$ROOT/opencode-relay" && nohup python3 main.py -config config.json \
+    ( cd "$ROOT/opencode-relay/service" && nohup python3 main.py -config config.json \
         > "$STATE_DIR/relay.log" 2>&1 & echo $! > "$STATE_DIR/relay.pid" )
     echo "opencode-relay -> http://127.0.0.1:$RELAY_PORT  (日志 .ocdata/relay.log)"
   fi
@@ -66,7 +66,7 @@ start_bridge() {
     # 进而让手机页 WebSocket 报 code 1006。只保留一个桥。
     pkill -f "opencode_bridge.py" 2>/dev/null || true
     sleep 0.3
-    ( cd "$ROOT/opencode-relay" && nohup python3 opencode_bridge.py --config opencode_bridge.json \
+    ( cd "$ROOT/opencode-relay/pc" && nohup python3 opencode_bridge.py --config opencode_bridge.json \
         > "$STATE_DIR/bridge.log" 2>&1 & echo $! > "$STATE_DIR/bridge.pid" )
     echo "opencode 桥已启动  (日志 .ocdata/bridge.log)"
   fi

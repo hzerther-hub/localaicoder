@@ -43,6 +43,6 @@ __pycache__/
 .ocdata/
 /relay-server/config.json
 /relay-server/opencode_bridge.json
-/opencode-relay/config.json
-/opencode-relay/opencode_bridge.json
+/opencode-relay/service/config.json
+/opencode-relay/pc/opencode_bridge.json
 /zhipai-proxy/config.json

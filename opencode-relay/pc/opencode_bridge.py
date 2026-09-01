@@ -6,7 +6,7 @@ opencode 中继桥（方案 A）——完整说明
 
 做什么
 ------
-把本地 AI Studio 的手机控制台页面（opencode-relay/page.html）连到 opencode serve，
+把手机控制台页面（../service/page.html，由中继提供）连到 opencode serve，
 让手机像原来控制本地 Agent 一样控制 opencode 干活：发消息/传附件、看流式回复与
 工具调用过程、切模型/切目录、审批权限、回答提问、跑斜杠命令、看 diff 等。
 
@@ -28,7 +28,7 @@ opencode 中继桥（方案 A）——完整说明
 - 本桥：不跑 agent，只做「Local AI Studio 协议 ↔ opencode HTTP API」的翻译。
   会话管理、流式输出、工具执行、权限裁决、todo、提问、斜杠命令全部由 opencode
   serve 提供，桥把它们映射成与 desktop/relay.go 完全一致的手机帧
-  （协议见 docs/relay/protocol.md）。
+  （协议见 ../../docs/relay/protocol.md）。
 
 线程/协程模型（三条并发流）
 --------------------------

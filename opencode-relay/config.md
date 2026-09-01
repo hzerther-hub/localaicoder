@@ -31,7 +31,7 @@
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `listen` | string | 绑定地址。**VPS 上必须 `127.0.0.1:9000`**（公网入口只留 Caddy 443）；本机测试用 `127.0.0.1:8999`。裸 `0.0.0.0` 等于不设防，禁止 |
+| `listen` | string | 绑定地址。**VPS 上必须 `127.0.0.1:9000`**（公网入口只留 Nginx 443）；本机测试用 `127.0.0.1:8999`。裸 `0.0.0.0` 等于不设防，禁止 |
 | `device_tokens` | string[] | **白名单**：中继只认列出的 token。一个 token = 一台设备；桌面（桥 `/client`）与手机（`/s/?d=`、`/s/ws`）用的是**同一个 token**。生成：`openssl rand -hex 32` |
 
 环境变量：
@@ -114,10 +114,12 @@ opencode serve --hostname 127.0.0.1 --port 9001
 
 ## 五、部署到 op.mei.biz（方案一 · 有公网 VPS）
 
+代码按两端分目录：`service/`（部署到 VPS 的中继服务端）与 `pc/`（留在本机的桥）。
+
 ```bash
-# 本机：生成 token 并拷贝中继模块到 VPS
+# 本机：生成 token 并把服务端目录拷到 VPS
 openssl rand -hex 32
-scp -r opencode-relay/{main.py,page.html,css,js,requirements.txt} root@VPS_IP:/opt/opencode-relay/
+scp -r opencode-relay/service root@VPS_IP:/opt/opencode-relay
 ```
 
 ```bash
@@ -128,13 +130,29 @@ cat > config.json <<'EOF'
 EOF
 ```
 
-Caddy（`/etc/caddy/Caddyfile`，自动签 Let's Encrypt、透传 WebSocket）：
+Nginx（`/etc/nginx/conf.d/opencode-relay.conf`，终结 TLS + 反代 + WebSocket/SSE 透传；
+完整带注释版见 `service/nginx.conf.example`）：
 
-```
-op.mei.biz {
-    reverse_proxy 127.0.0.1:9000
+```nginx
+server {
+    listen 443 ssl;
+    server_name op.mei.biz;
+    ssl_certificate     /etc/ssl/certs/op.mei.biz.pem;        # 证书按实际签发路径
+    ssl_certificate_key /etc/ssl/private/op.mei.biz.key;
+    location / {
+        proxy_pass         http://127.0.0.1:9000;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;   # WebSocket 必需（手机页 + 桥两条 WS）
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+        proxy_buffering    off;                     # 流式回复必需，缓冲会吞掉流式
+        proxy_read_timeout 3600s;                   # 默认 60s 会掐断长连接
+        proxy_send_timeout 3600s;
+    }
 }
 ```
+
+> Caddy 亦可：`op.mei.biz { reverse_proxy 127.0.0.1:9000 }`，同样自动透传 WebSocket。
 
 systemd（`/etc/systemd/system/opencode-relay.service`）：
 

@@ -1,0 +1,76 @@
+# opencode-relay · Nginx 反代配置示例
+# =============================================================================
+# 部署位置：VPS /etc/nginx/conf.d/opencode-relay.conf（或 sites-available + 软链）
+# 拷贝后按实际情况改三处：server_name、证书路径、proxy_pass 端口，然后：
+#     nginx -t && systemctl reload nginx
+#
+# 为什么每个指令都不能省（缺一个就会出现对应"经典故障"）：
+#   proxy_http_version 1.1 + Upgrade/Connection —— WebSocket 升级握手必需。
+#       缺了 → 手机页「连接断开 (code 1006)」反复重连（/s/ws 与 /client 两条 WS 都走这里）。
+#   proxy_buffering off —— 流式回复逐帧下发必需。缓冲开着时 Nginx 会攒满
+#       buffer 才吐给浏览器，手机端表现为"转圈半天、回复一次性蹦出来"。
+#   proxy_read_timeout 3600s —— 默认 60s 会掐断一切安静的长连接：
+#       手机页挂着不说话、桥与中继之间的 WS 都会被 60s 掐掉。
+#   client_max_body_size —— 页面/接口请求体上限（WS 帧大小由中继的
+#       RELAY_WS_MAX 控制，两者管的是不同的东西，都别太小）。
+#
+# 安全模型：中继(main.py)只绑 127.0.0.1:9000，公网只暴露本文件的 80/443；
+# 鉴权由中继的 device_token 完成（?d=<token>），Nginx 不做业务校验。
+# =============================================================================
+
+# ---- HTTP：全部 301 到 HTTPS（如有 ACME http-01 签发需求可放行 /.well-known/）----
+server {
+    listen 80;
+    server_name op.mei.biz;                 # ← 改成你的域名
+    return 301 https://$host$request_uri;
+}
+
+# ---- HTTPS：唯一的公网入口 ----
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name op.mei.biz;                 # ← 改成你的域名
+
+    ssl_certificate     /etc/ssl/certs/op.mei.biz.pem;      # ← 按实际签发路径
+    ssl_certificate_key /etc/ssl/private/op.mei.biz.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    client_max_body_size 20m;
+
+    location / {
+        proxy_pass         http://127.0.0.1:9000;   # ← 中继 config.json 的 listen 端口
+        proxy_http_version 1.1;
+
+        # WebSocket 升级三件套（/s/ws 手机端、/client 桥 端到端透传）
+        proxy_set_header   Upgrade    $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host       $host;
+
+        # 流式与长连接
+        proxy_buffering    off;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+
+# ---- 变体：方案 B（官方 opencode UI 直出公网）--------------------------
+# 本机 opencode serve 经 SSH 反向隧道映射到 VPS 的 127.0.0.1:19001 时，
+# 再加一个站点把 / 反代到 19001 即可，指令集与上面完全相同（见 TUNNEL-3STEPS.md）：
+#
+# server {
+#     listen 443 ssl;
+#     server_name oc.mei.biz;
+#     ssl_certificate     /etc/ssl/certs/oc.mei.biz.pem;
+#     ssl_certificate_key /etc/ssl/private/oc.mei.biz.key;
+#     location / {
+#         proxy_pass         http://127.0.0.1:19001;
+#         proxy_http_version 1.1;
+#         proxy_set_header   Upgrade    $http_upgrade;
+#         proxy_set_header   Connection "upgrade";
+#         proxy_set_header   Host       $host;
+#         proxy_buffering    off;                    # 官方 UI 的 /event SSE 必需
+#         proxy_read_timeout 3600s;
+#         proxy_send_timeout 3600s;
+#     }
+# }

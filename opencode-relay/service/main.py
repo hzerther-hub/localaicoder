@@ -56,8 +56,8 @@ opencode 远程控制 · 中继服务器（FastAPI 版，方案 A）
           "device_tokens": ["<64位随机hex>"] }  # openssl rand -hex 32
 
     启动：python3 main.py -config config.json
-    生产：systemd 常驻（Restart=always）+ Caddy/nginx 反代 443 → 本端口；
-          反代须透传 WebSocket（/s/ws、/client）。
+    生产：systemd 常驻（Restart=always）+ Nginx 反代 443 → 本端口
+          （见 nginx.conf.example）；反代须透传 WebSocket（/s/ws、/client）。
 
 四、安全清单
 
@@ -68,12 +68,14 @@ opencode 远程控制 · 中继服务器（FastAPI 版，方案 A）
 
 五、相关文件
 
-    page.html / css/ / js/     手机控制台前端（本进程直接提供）
-    opencode_bridge.py         桥：把中继协议翻译成 opencode HTTP API（本机跑）
-    opencode_bridge.json       桥配置（server_url / device_token / workspace …）
-    config.md                  部署说明（VPS + Caddy + systemd 全流程）
-    TUNNEL-3STEPS.md           隧道三步：把官方 opencode UI 也搬上公网的手册
-    ../relay-server/           姊妹项目：Local AI Studio 自用中继（协议同源）
+    本目录（service/）         中继服务端：main.py + page.html + css/ + js/
+                               + config.json.example + requirements.txt + nginx.conf.example
+    ../pc/opencode_bridge.py   桥：把中继协议翻译成 opencode HTTP API（本机跑）
+    ../pc/opencode_bridge.json 桥配置（server_url / device_token / workspace …）
+    ../config.md               部署说明（VPS + Nginx + systemd 全流程）
+    ../TUNNEL-3STEPS.md        隧道三步：把官方 opencode UI 也搬上公网的手册
+    ../../relay-server/        姊妹项目：Local AI Studio 自用中继（协议同源）
+    ../ARTICLE.md              技术文章：整套实现的技术剖析
 ════════════════════════════════════════════════════════════════════
 """
 

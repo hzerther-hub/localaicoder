@@ -179,6 +179,7 @@ func canonical(t *testing.T, v any) string {
 }
 
 func TestSchemasGold(t *testing.T) {
+	setup(t) // 关掉条件工具，让 ToolSchemas() 稳定等于无条件 10 个
 	var legacy []map[string]any
 	if err := json.Unmarshal([]byte(legacySchemasJSON), &legacy); err != nil {
 		t.Fatal(err)

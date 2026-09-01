@@ -85,12 +85,12 @@ sleep 2 && curl -sf http://127.0.0.1:9001/global/health && echo " 9001 OK"
 ```bash
 python3 - <<'PY'
 import json
-p='/home/wellfuture/build/localaicoder/opencode-relay/opencode_bridge.json'
+p='/home/wellfuture/build/localaicoder/opencode-relay/pc/opencode_bridge.json'
 c=json.load(open(p)); c['opencode']['password']='<同一个密码>'
 json.dump(c,open(p,'w'),ensure_ascii=False,indent=2); print('bridge password updated')
 PY
 pkill -f 'opencode_bridg[e]\.py'; sleep 1
-cd /home/wellfuture/build/localaicoder/opencode-relay && setsid nohup python3 opencode_bridge.py \
+cd /home/wellfuture/build/localaicoder/opencode-relay/pc && setsid nohup python3 opencode_bridge.py \
   --config opencode_bridge.json > /home/wellfuture/build/localaicoder/.ocdata/bridge.log 2>&1 < /dev/null &
 ```
 

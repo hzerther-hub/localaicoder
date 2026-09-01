@@ -92,7 +92,23 @@ func (c *clientBase) CallTool(t transport, tool string, args map[string]any) (st
 		return "错误：MCP 调用失败：" + err.Error(), nil
 	}
 	if isError := msg.B(res, "isError"); isError {
-		return "错误：MCP 工具返回错误", nil
+		// 工具层报错时带回真实错误文本（否则只剩笼统一句，UI 和模型都无法诊断）
+		var parts []string
+		for _, cv := range msg.L(res, "content") {
+			if p, ok := cv.(map[string]any); ok && msg.S(p, "type") == "text" {
+				if s := strings.TrimSpace(msg.S(p, "text")); s != "" {
+					parts = append(parts, s)
+				}
+			}
+		}
+		detail := strings.Join(parts, "; ")
+		if detail == "" {
+			return "错误：MCP 工具返回错误", nil
+		}
+		if len(detail) > 500 {
+			detail = detail[:500] + "…"
+		}
+		return "错误：MCP 工具返回错误：" + detail, nil
 	}
 	var textParts []string
 	var media []string

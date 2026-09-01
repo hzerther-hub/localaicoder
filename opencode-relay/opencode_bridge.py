@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-opencode 中继桥（方案 A）：
+opencode 中继桥（方案 A）——完整说明
+=====================================
 
+做什么
+------
 把本地 AI Studio 的手机控制台页面（opencode-relay/page.html）连到 opencode serve，
-让手机像原来控制本地 Agent 一样控制 opencode 干活。
+让手机像原来控制本地 Agent 一样控制 opencode 干活：发消息/传附件、看流式回复与
+工具调用过程、切模型/切目录、审批权限、回答提问、跑斜杠命令、看 diff 等。
+
+拓扑（三段式，本脚本是其中最右一段）
+------------------------------------
 
                        ┌─ opencode-relay（FastAPI, 哑管道） ─┐
   手机浏览器(page.html) ──WS /s/ws ──>  [按 device_token 路由] ──WS /client──> 本脚本(桥)
@@ -13,9 +20,51 @@ opencode 中继桥（方案 A）：
                                           └──────────── 只转发 JSON 帧 ◄──────┘
                                                               + 订阅 /event SSE 转成手机帧
 
-- 协议（手机帧 / 下行帧）与 desktop/relay.go 完全一致，见 docs/relay/protocol.md。
-- 桥本身不跑 agent：它把 Local AI Studio 的协议翻译成 opencode 的 HTTP API。
-- 用法：
+职责边界
+--------
+- 中继（relay-server）：哑管道。只按 device_token 把手机帧广播给对应设备、把设备
+  帧广播给该设备的所有手机页，不理解也不缓存帧内容——桥断线期间的下行帧会丢，
+  由本桥重连后的「断线补偿」兜底（见 Bridge._relay_loop）。
+- 本桥：不跑 agent，只做「Local AI Studio 协议 ↔ opencode HTTP API」的翻译。
+  会话管理、流式输出、工具执行、权限裁决、todo、提问、斜杠命令全部由 opencode
+  serve 提供，桥把它们映射成与 desktop/relay.go 完全一致的手机帧
+  （协议见 docs/relay/protocol.md）。
+
+线程/协程模型（三条并发流）
+--------------------------
+1. asyncio 事件循环（主协程）：
+   - Bridge._relay_loop：与中继的 WebSocket 出入站 + 指数退避重连；
+   - Bridge._event_pump：消费 SSE 队列，翻译成手机帧下行。
+2. SSE 守护线程（Bridge._sse_thread）：requests 流式读 /event 是阻塞 IO，不能进
+   事件循环，故独立线程常驻订阅，收到帧经 call_soon_threadsafe 投回事件循环队列。
+3. 线程池（asyncio.to_thread）：所有对 opencode 的阻塞 HTTP 调用都丢线程池跑，
+   避免卡住事件循环。
+
+关键协议映射速览
+----------------
+- 上行（手机 → 桥）：send / stop / state / messages / models / model / mode /
+  workspace / permission_response / dir_list / new_session / commands / command /
+  question_reply / question_reject / …，完整分发表见 Bridge._on_phone_frame。
+- 下行（桥 → 手机）：text / tool_start / tool_result / usage / todo / run:started /
+  run:finished / done / session:opened / sessions:changed / permission_request /
+  question_request / state / models / messages / commands / diff / error / …，
+  由 translate_event（SSE→帧）与各 _handle_* 产生。
+
+配置（opencode_bridge.json，命令行同名参数覆盖同名字段）
+--------------------------------------------------------
+    {
+      "relay":    {"server_url": "wss://yours.com",    // 中继地址（http/https 亦可）
+                   "device_token": "<64位hex>",        // 设备白名单令牌
+                   "workspace": "/path/to/project",    // 默认工作区
+                   "mode": "always",                   // readonly / ask / always
+                   "insecure": false},                 // 自签证书时 true（跳过 TLS 校验）
+      "opencode": {"base_url": "http://127.0.0.1:9001",
+                   "default_model": "provider/model",  // 可空 = 用 opencode 默认
+                   "password": ""}                     // = OPENCODE_SERVER_PASSWORD，设了才走 Basic 认证
+    }
+
+用法
+----
     python opencode_bridge.py --config opencode_bridge.json
   或直接给参数（覆盖同名字段）：
     python opencode_bridge.py --relay wss://yours.com --token <64hex> \
@@ -36,19 +85,32 @@ from urllib.parse import quote
 import requests
 import websockets
 
+# 脚本所在目录：默认配置文件 opencode_bridge.json 与脚本同目录
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG = os.path.join(HERE, "opencode_bridge.json")
-PERM_TIMEOUT = int(os.environ.get("OPENCODE_BRIDGE_PERM_TIMEOUT", "120"))  # ask 模式手机未回，超时自动拒绝
+# ask 权限模式下手机端迟迟不审批的兜底：超过该秒数自动 reject，避免 opencode 侧
+# 永久挂起等授权。可用环境变量 OPENCODE_BRIDGE_PERM_TIMEOUT 覆盖（单位秒，默认 120）。
+PERM_TIMEOUT = int(os.environ.get("OPENCODE_BRIDGE_PERM_TIMEOUT", "120"))
 
 
 def log(msg):
+    # 统一带时间戳的 stdout 日志；flush=True 保证 nohup/systemd 重定向后仍实时可见
     print(f"[bridge {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 # ---------------------------------------------------------------------------
-# opencode serve HTTP 封装（每个调用都在子线程跑，避免阻塞 asyncio 事件循环）
+# opencode serve HTTP 封装（每个调用都是阻塞 requests，桥侧一律经 asyncio.to_thread
+# 丢子线程跑，避免阻塞 asyncio 事件循环）
 # ---------------------------------------------------------------------------
 class OpenCodeClient:
+    """opencode serve 的极简 HTTP 客户端。
+
+    - base_url 形如 http://127.0.0.1:9001，path 以 /session、/event 等开头；
+    - opencode serve 设了 OPENCODE_SERVER_PASSWORD 时走 HTTP Basic 认证
+      （用户名固定 opencode，密码即该环境变量值），未设则免认证直连；
+    - 所有方法失败即抛异常（raise_for_status），兜底方式由调用方决定。
+    """
+
     def __init__(self, base_url, password=""):
         self.base = (base_url or "").rstrip("/")
         self.s = requests.Session()
@@ -62,11 +124,13 @@ class OpenCodeClient:
         return self.base + path
 
     def get(self, path):
+        # path 可能已带 query（如 ?directory=…），直接拼接即可
         r = self.s.get(self._url(path), timeout=20)
         r.raise_for_status()
         return r.json()
 
     def post(self, path, body=None):
+        # opencode 部分端点（abort/unrevert 等）成功返回 204 无 body，按 None 处理
         r = self.s.post(self._url(path), json=body, timeout=30)
         if r.status_code == 204:
             return None
@@ -84,6 +148,7 @@ class OpenCodeClient:
         return r.json()
 
     def session_exists(self, sid):
+        # 会话可能已被桌面端/opencode 侧删掉；用实时探活代替本地缓存，保证跨端一致
         try:
             self.get(f"/session/{sid}")
             return True
@@ -92,10 +157,16 @@ class OpenCodeClient:
 
 
 # ---------------------------------------------------------------------------
-# 手机帧 ↔ opencode 模型的翻译
+# 手机帧 ↔ opencode 模型的翻译（纯函数，供 Bridge 调用）
 # ---------------------------------------------------------------------------
 def dataurl_of_image_part(part):
-    """把 opencode file/image part 转成 dataURL（手机页用 <img src>）。"""
+    """把 opencode file/image part 转成 dataURL（手机页用 <img src> 显示）。
+
+    opencode 不同版本的图片 part 字段不统一，按 url → data → value 顺序取值：
+    - 已是 dataURL：原样返回；
+    - 是裸 base64 串：按 part 的 mime（缺省 image/png）包成 dataURL；
+    - 其他（http 链接等）：原样返回，由前端自行处理。
+    """
     url = part.get("url") or part.get("data") or part.get("value") or ""
     if url.startswith("data:image"):
         return url
@@ -106,7 +177,13 @@ def dataurl_of_image_part(part):
 
 
 def scoped(path, directory):
-    """API 路径追加 ?directory=（opencode 1.x 按目录作用域；旧版本忽略该参数时行为同全局，安全降级）。"""
+    """API 路径追加 ?directory=（opencode 1.x 按目录作用域；旧版本忽略该参数时行为同全局，安全降级）。
+
+    opencode 1.x 的会话/文件/命令等资源都挂在「项目目录」命名空间下：同一个
+    serve 进程可同时服务多个项目目录，调 API 时用 directory 指明操作哪个目录。
+    桥用 _dir_by_sid 记住每个会话的出生目录，会话级调用都带上它——手机切了
+    工作区后也不会误伤其他目录下的会话。
+    """
     if not directory:
         return path
     sep = "&" if "?" in path else "?"
@@ -114,6 +191,12 @@ def scoped(path, directory):
 
 
 def oc_sessions_to_phone(sessions, running_map, trash_map):
+    """opencode 会话列表 → 手机端会话卡片列表。
+
+    - running_map: session_id -> bool，桥从 session.status 事件推断的「运行中」标记；
+    - trash_map: 已删进垃圾箱的 workspace 集合，命中则整项隐藏（与桌面端行为一致）；
+    - 输出字段与 desktop/relay.go 的 state.sessions 严格对齐，勿改字段名。
+    """
     out = []
     for s in sessions:
         ws = s.get("directory") or s.get("path") or ""
@@ -130,8 +213,25 @@ def oc_sessions_to_phone(sessions, running_map, trash_map):
 
 
 def translate_event(ev, running_map):
-    """把一条 opencode /event SSE 消息转成若干手机帧。
-    running_map: session_id -> bool，用来推断 run:started/run:finished。"""
+    """把一条 opencode /event SSE 消息转成 0..n 条手机帧（一条 SSE 常对应多帧）。
+
+    running_map 有两种条目：
+    - session_id -> bool：会话是否在跑，用于推断 run:started/run:finished 的「沿」；
+    - "_tool_seen" -> {part_id: "start"|"done"}：工具 part 去重表。opencode 对同一
+      tool part 会连发多次 message.part.updated（pending/running/completed/error），
+      手机端只关心两个沿：开跑一次（tool_start）、结束一次（tool_result）。
+
+    事件覆盖表：
+    - message.part.delta(field=text)   → text（流式正文增量；reasoning/title 等字段手机页无展示，不发）
+    - message.part.updated(tool 系)    → tool_start / tool_result（带参数与输出，输出截到末尾 900 字）
+    - message.part.updated(agent 系)   → tool（子 agent 切换提示行）
+    - session.status(busy/idle)        → run:started（仅空闲→忙沿发一次，避免多步 agent 反复重置步骤栏）/ run:finished + done
+    - session.idle                     → run:finished + done（旧版本事件名兼容）
+    - session.updated(info.tokens)     → usage（累计 token 计数）
+    - session.todo                     → todo（opencode 真实任务清单 → 手机端步骤栏）
+    - question.asked / replied / rejected → question_request / question_done（问答闭环）
+    其余事件（file/storage/lsp/…）与手机端无关，返回空列表直接丢弃。
+    """
     frames = []
     typ = ev.get("type")
     p = ev.get("properties") or {}
@@ -213,9 +313,19 @@ def translate_event(ev, running_map):
 
 
 # ---------------------------------------------------------------------------
-# 桥主体
+# 桥主体：持有全部运行状态，串起「中继 WebSocket 出入站」与「opencode SSE 订阅」
 # ---------------------------------------------------------------------------
 class Bridge:
+    """桥核心，两条长连接在这里汇合。
+
+    - 对中继：_relay_loop 维持一条 WebSocket（/client?d=<token>），收手机帧交给
+      _on_phone_frame 分发，下行帧统一经 _send 发出；
+    - 对 opencode：_sse_thread 后台订阅 /event SSE，事件进 evq 队列，由 _event_pump
+      消费并翻译成手机帧；所有 HTTP 调用经 asyncio.to_thread 丢线程池。
+
+    生命周期：main() 构造后调 run()，进程常驻，断线自动重连。
+    """
+
     def __init__(self, cfg):
         self.cfg = cfg
         pw = cfg["opencode"].get("password") or os.environ.get("OPENCODE_SERVER_PASSWORD", "")
@@ -233,16 +343,23 @@ class Bridge:
 
         self.current = ""          # 当前打开的 opencode session id
         self.current_model = self.default_model
-        self.running_map = {}      # session_id -> bool
-        self._dir_by_sid = {}      # session_id -> 创建目录（session 级调用按目录作用域）
+        self.running_map = {}      # session_id -> bool（另有 "_tool_seen" 子表做工具 part 去重）
+        self._dir_by_sid = {}      # session_id -> 创建目录（session 级调用按目录作用域，见 scoped()）
         self.pending_perms = {}    # permissionID -> Permission(ask 模式等待手机审批)
-        self.perm_timers = {}      # permissionID -> TimerHandle(超时自动拒绝)
-        self._provider_cache = None  # /config/providers 懒加载缓存
+        self.perm_timers = {}      # permissionID -> TimerHandle(超时自动拒绝，见 PERM_TIMEOUT)
+        self._provider_cache = None  # /config/providers 懒加载缓存（解析无前缀模型名用）
         self._missed = set()       # 断线期间错过帧的会话，重连后通知手机重拉
-        self.insecure = cfg["relay"].get("insecure", False)
+        self.insecure = cfg["relay"].get("insecure", False)  # true=跳过中继 TLS 证书校验（自签证书）
 
     # ---- 发送到手机（经中继广播给该设备所有手机页） ----
     async def _send(self, frame):
+        """下行一帧 JSON 给手机页。
+
+        中继是哑管道不缓存帧：若此刻未连上中继（ws 为空）或发送失败，则把该帧
+        所属会话记进 _missed，等重连成功后统一补发 session:opened 让手机端重拉
+        全量消息（见 _relay_loop）。wlock 串行化发送，避免多协程交错写同一
+        WebSocket。返回是否真正发出。
+        """
         ws = self.ws
         sid = frame.get("session") or frame.get("sessionID") or frame.get("sessionId")
         if ws is None:
@@ -261,6 +378,15 @@ class Bridge:
 
     # ---- /event SSE 订阅线程：解析 data: 帧，丢进 asyncio 队列 ----
     def _sse_thread(self):
+        """常驻守护线程：订阅 opencode 的全局事件流 GET /event。
+
+        - requests 流式读是阻塞 IO，必须独立于 asyncio 事件循环跑；
+        - SSE 行协议只关心 "data:" 行，注释行/空行跳过，非 JSON 帧忽略；
+        - 解析出的事件经 call_soon_threadsafe + evq.put_nowait 线程安全地交给
+          事件循环侧的 _event_pump 消费；
+        - 断流（opencode 重启/网络抖动）则打日志、sleep 3s 后无限重订阅，
+          桥的生命周期内事件订阅自愈。
+        """
         url = self.oc.base + "/event"
         while True:
             try:
@@ -287,6 +413,15 @@ class Bridge:
 
     # ---- 事件泵：把 opencode 事件翻译成手机帧并下行 ----
     async def _event_pump(self):
+        """事件循环侧的消费者：evq 取 SSE 事件 → translate_event → _send 下行。
+
+        两处特殊处理：
+        - permission.asked 不走 translate_event，单独分流：readonly/always 模式
+          由桥自动应答，ask 模式转手机审批（_handle_permission_asked）；
+        - 翻译出的帧若缺 sessionId，用事件自带的 sessionID 补上——断线记账
+          （_missed）与手机端按会话过滤都依赖它。
+        单帧翻译抛异常只打日志，绝不让泵停转。
+        """
         while True:
             ev = await self.evq.get()
             try:
@@ -306,6 +441,12 @@ class Bridge:
 
     # ---- 权限：opencode permission.asked -> /permissions/:id 应答 ----
     async def _handle_permission_asked(self, perm):
+        """opencode 工具执行前的授权请求，按桥的 mode 三态分流：
+
+        - readonly：一律 reject（只读模式禁止任何写操作）；
+        - always：一律回 always（同类操作以后也不再问）；
+        - ask：挂进 pending_perms 等手机审批，PERM_TIMEOUT 秒无应答自动 reject。
+        """
         pid = perm.get("id")
         sid = perm.get("sessionID")
         if not pid or not sid:
@@ -330,7 +471,12 @@ class Bridge:
         asyncio.ensure_future(self._answer_permission(sid, pid, "reject"))
 
     async def _answer_permission(self, sid, pid, response):
-        """response: 'once' | 'always' | 'reject'（opencode 接受的三态）。"""
+        """把审批结果 POST 回 opencode，并清掉挂起态与超时定时器。
+
+        response: 'once' | 'always' | 'reject'（opencode 接受的三态）。
+        唯一的应答出口：模式自动应答、超时兜底、手机审批都汇到这里，天然幂等
+        （重复应答时 pending/timer 已被清空，只会多发一次 POST，opencode 侧容忍）。
+        """
         self.pending_perms.pop(pid, None)
         t = self.perm_timers.pop(pid, None)
         if t is not None:
@@ -343,6 +489,11 @@ class Bridge:
             log(f"权限应答 {pid} 失败: {e}")
 
     async def _respond_phone_permission(self, frame):
+        """手机审批帧（allow/deny/always）→ opencode 三态（once/reject/always）。
+
+        未知响应值一律按 reject 处理（fail-closed）；sessionID 优先取手机帧自带
+        的，缺失时回查挂起表 pending_perms。
+        """
         pid = frame.get("id")
         resp = (frame.get("response") or "").strip().lower()
         mapped = {"allow": "once", "deny": "reject", "always": "always"}.get(resp, "reject")
@@ -354,6 +505,17 @@ class Bridge:
 
     # ---- 中继出入站循环（带重连） ----
     async def _relay_loop(self):
+        """与中继维持长连接的主循环，进程生命周期内永不退出。
+
+        每轮：websockets 连 /client?d=<token>（15s 连接超时、20s 心跳）→ 连上后
+        发 hello 握手帧（工作区/当前模型/权限模式/版本）→ 断线补偿 → 收帧循环
+        （每帧 JSON 解析后交 _on_phone_frame）→ 连接断开则退避后重来
+        （1s 起指数退避，30s 封顶；成功连上即重置为 1s）。
+
+        断线补偿：中继哑管道不缓存帧，桥断线窗口里产生的下行帧已丢（其所属
+        会话记在 _missed），重连成功后对每个受影响会话补发 session:opened，
+        手机端收到会重拉该会话全量消息，等效恢复。
+        """
         server = self.relay_url
         server = server.replace("https://", "wss://").replace("http://", "ws://").rstrip("/")
         url = f"{server}/client?d={quote(self.token)}"
@@ -400,6 +562,24 @@ class Bridge:
 
     # ---- 手机下行的指令分发 ----
     async def _on_phone_frame(self, frame):
+        """手机 → 桥的指令分发表（帧格式与 desktop/relay.go 一致）。
+
+        send                发消息/附件（_handle_send，核心路径）
+        stop                中止会话运行（POST /session/:id/abort）
+        state               全量状态快照（工作区/分支/模式/模型/会话列表）
+        messages            拉某会话历史消息（进手机端聊天窗）
+        models / model      模型清单下发 / 切换当前模型（仅记录在桥侧）
+        effort              推理档位：opencode 无对应概念，v1 直接忽略
+        mode                切权限模式（readonly/ask/always），只改桥侧
+        delete_session / rename_session / open_session   会话删除/改名/选中
+        workspace           手机端切桥的活动工作区（影响 state 显示/git 分支/新会话归属）
+        permission_response ask 权限的审批结果回传
+        dir_list / new_session   子目录浏览 / 按目录新建会话
+        commands / command  斜杠命令清单下发 / 执行（_handle_command）
+        question_reply / question_reject   opencode 提问的作答/拒绝
+
+        任何分支抛异常都不许弄断连接：捕获后转 error 帧回手机。
+        """
         t = frame.get("type")
         rid = frame.get("rid")
         try:
@@ -479,6 +659,7 @@ class Bridge:
             await self._send({"type": "error", "delta": f"桥接错误：{e}"})
 
     async def _session_list(self):
+        # 全局会话清单（不带 directory，跨目录全返回）；当前 state 走的是内联版本，此处备用
         return await asyncio.to_thread(self.oc.get, "/session")
 
     async def _dir_list(self, path, rid):
@@ -523,7 +704,11 @@ class Bridge:
             await self._send({"type": "error", "delta": f"新建会话失败：{e}", "rid": rid})
 
     def _model_obj(self):
-        """'providerID/modelID' 字符串转 opencode 期望的 model 对象（同步版，仅带前缀时可用）。"""
+        """'providerID/modelID' 字符串转 opencode 期望的 model 对象（同步版，仅带前缀时可用）。
+
+        当前无人直接调用（_resolve_model 是其异步超集，无前缀时还能查 provider
+        清单消歧），保留给未来的同步场景。
+        """
         k = self.current_model or ""
         if "/" in k:
             pid, mid = k.split("/", 1)
@@ -554,6 +739,18 @@ class Bridge:
         return None
 
     async def _handle_send(self, frame):
+        """手机「发送」帧 → opencode prompt_async，桥内最核心的翻译路径。
+
+        步骤：
+        1. 附件分流（对齐 desktop/relay.go）：dataURL 图片 → opencode 原生多模态
+           file part 直传；其他文件 → 落盘工作区 media/（_save_upload），把绝对
+           路径附进 prompt 正文，让 agent 自己用工具去读；
+        2. 无会话（或传入 sid 已被删）则先在当前工作区建会话，标题取消息前 40 字；
+        3. 先回 user_message 帧做手机端回显（显示文本带 📎 附件名，prompt 不带）；
+        4. 组 body：parts（text + 图片 file part）+ model（_resolve_model 解析），
+           POST /session/:sid/prompt_async（按会话目录作用域）后立即返回——
+           异步端点，后续产出全靠 /event SSE 流回来。
+        """
         sid = frame.get("session")
         text = (frame.get("text") or "").strip()
         atts = [a for a in (frame.get("atts") or [])
@@ -620,17 +817,21 @@ class Bridge:
             await self._send({"type": "error", "delta": f"发送失败：{e}"})
 
     async def _handle_stop(self, frame):
+        # 中止运行：POST /session/:id/abort；本地直接补发 run:finished 让手机端
+        # 立即收尾，不等 SSE 的 session.idle 事件
         sid = frame.get("session")
         if sid:
             await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/abort", self._dir_by_sid.get(sid)), None)
             await self._send({"type": "run:finished", "sessionId": sid})
 
     async def _handle_delete(self, sid):
+        # 删除会话（opencode 侧进垃圾箱，可恢复）；顺手清掉运行标记
         if sid:
             await asyncio.to_thread(self.oc.delete, f"/session/{sid}")
             self.running_map.pop(sid, None)
 
     async def _handle_rename(self, sid, title):
+        # 改标题：PATCH /session/:id，空标题直接忽略
         if sid and title and title.strip():
             await asyncio.to_thread(self.oc.patch, f"/session/{sid}", {"title": title.strip()})
 
@@ -659,7 +860,20 @@ class Bridge:
         return nid
 
     async def _handle_command(self, frame):
-        """手机端 /xxx：内建命令映射到 opencode 专有端点，其余转发 POST /session/:id/command。"""
+        """手机端 /xxx：内建命令映射到 opencode 专有端点，其余转发 POST /session/:id/command。
+
+        内建映射（目录参数均按会话出生目录作用域，见 scoped()）：
+        - undo    回滚最近一条消息及其文件改动（先查消息列表取末条，再 /revert）
+        - redo    恢复被 undo 的改动（/unrevert）
+        - compact 手动压缩上下文（/summarize，需先选好模型才能执行）
+        - share   生成分享链接并作为 text 帧回显（/share）
+        - unshare 取消分享（DELETE /share）
+        - diff    本会话代码改动：优先 /session/:id/diff，旧版本无此端点则回退
+                  全局 /vcs/diff；拼成 diff 帧下发（超 4000 字截断）
+        - init    让 opencode 分析代码库生成 AGENTS.md（/init）
+        其余命令（.opencode/command 自定义命令、skill、mcp 来源）原样转发给
+        /session/:id/command，由 opencode 侧执行；执行前 _ensure_session 兜底建会话。
+        """
         sid = frame.get("session")
         cmd = (frame.get("command") or "").strip().lstrip("/")
         args = (frame.get("arguments") or "").strip()
@@ -733,6 +947,8 @@ class Bridge:
 
     # ---- 手机页需要的几类应答帧 ----
     def _git_branch(self):
+        # 当前工作区的 git 分支名（同步阻塞，只在 _state 组帧时调一次；
+        # 非 git 目录/无 git 命令返回空串，手机端就不显示分支角标）
         import subprocess
         try:
             out = subprocess.check_output(["git", "-C", self.workspace, "rev-parse", "--abbrev-ref", "HEAD"],
@@ -742,6 +958,11 @@ class Bridge:
             return ""
 
     async def _state(self, rid):
+        """全量状态快照 → state 帧（手机页连上 hello 后先要一次，也是各操作后的刷新手段）。
+
+        顺带用会话自带的 directory 刷新 _dir_by_sid：桌面端建的会话桥不知道出生
+        目录，靠这里补齐，保证后续该会话级调用都带对 directory。
+        """
         try:
             sessions = await asyncio.to_thread(self.oc.get, "/session")
         except Exception:
@@ -755,6 +976,15 @@ class Bridge:
         }
 
     async def _messages(self, sid, rid):
+        """拉取会话历史 → messages 帧（手机端进会话时渲染聊天记录）。
+
+        映射规则（尽量保留原貌、压制噪音）：
+        - 只取 user/assistant 两种角色，其余跳过；
+        - text part 拼接为正文；data:image 的 file/image part 收进 images 数组；
+        - tool part 手机页没有对应槽位，折成一段「> 🔧 工具名: 输出前300字」
+          引用文本（dict 型输出先取 content/output 字段）；
+        - 纯空消息（无文本无图）丢弃。
+        """
         if not sid:
             return {"type": "messages", "rid": rid, "id": sid, "messages": []}
         try:
@@ -792,6 +1022,14 @@ class Bridge:
         return {"type": "messages", "rid": rid, "id": sid, "messages": msgs}
 
     async def _models(self, rid):
+        """provider/模型清单 → models 帧（手机端模型选择器数据源）。
+
+        - key 用 'providerID/modelID' 复合键，与桥侧 current_model、手机端
+          切模型的 model 帧保持同一格式；
+        - is_current：用户切过模型就以 current_model 为准；没切过则跟随
+          opencode 各 provider 的默认模型（default[providerID] → modelID）；
+        - vision/reasoning 从 capabilities 推导，手机端用来打能力角标。
+        """
         try:
             d = await asyncio.to_thread(self.oc.get, "/config/providers")
         except Exception:
@@ -820,6 +1058,11 @@ class Bridge:
 
     # ---- 启动 ----
     async def run(self):
+        """入口：记下事件循环、拉起 SSE 守护线程，然后 gather 两条主协程。
+
+        _relay_loop 与 _event_pump 都是无限循环；任一真正崩溃会上抛让进程退出
+        （交给 systemd/supervisor 拉起），不做内部静默重生。
+        """
         self.loop = asyncio.get_running_loop()
         threading.Thread(target=self._sse_thread, daemon=True).start()
         await asyncio.gather(self._relay_loop(), self._event_pump())
@@ -855,9 +1098,15 @@ def _save_upload(ws_dir, name, data):
 
 
 # ---------------------------------------------------------------------------
-# 配置
+# 配置：内置默认 ← json 文件 ← 命令行参数，三层覆盖
 # ---------------------------------------------------------------------------
 def load_config(path, overrides):
+    """合成最终配置。
+
+    优先级：代码内置默认 < --config 指向的 json 文件 < 命令行同名参数。
+    json 允许只写部分段：dict 值按键合并进默认段（局部覆盖），非 dict 值
+    整体替换；overrides 里值为 None 表示命令行没传该参数，跳过不覆盖。
+    """
     cfg = {
         "relay": {"server_url": "", "device_token": "", "workspace": os.getcwd(),
                   "mode": "always", "insecure": False},
@@ -892,6 +1141,8 @@ def load_config(path, overrides):
 
 
 def main():
+    """CLI 入口：解析参数 → 合成配置 → 校验必填项（中继地址 + device token，
+    缺一项即退出码 1）→ 构造 Bridge 常驻运行，Ctrl+C 优雅退出。"""
     ap = argparse.ArgumentParser(description="opencode 中继桥（把手机控制台接到 opencode）")
     ap.add_argument("--config", default=DEFAULT_CONFIG, help="配置 json 路径")
     ap.add_argument("--relay", help="中继服务器地址(https/wss)，如 wss://yours.com 或 http://127.0.0.1:8999")

@@ -1,3 +1,5 @@
+[English](README-opencode.en.md) | 中文
+
 # 远程驱动家里 PC 的 opencode 进行开发（方案 A + B）
 
 > **最终目的：人在外面，用手机/任意浏览器远程调用自己家里 PC 上的 opencode 干开发活。**

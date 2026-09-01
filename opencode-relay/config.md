@@ -1,3 +1,5 @@
+[English](config.en.md) | 中文
+
 # opencode-relay 配置说明（config.md）
 
 > 通过中继在公网（如 `op.mei.biz`）远程驱动本机 opencode 的**全部配置项说明**。

@@ -1,3 +1,5 @@
+[English](TUNNEL-3STEPS.en.md) | 中文
+
 # 隧道三步 · 把官方 opencode UI 搬上公网（服务器 AI 执行手册）
 
 > 目标：手机/外网打开 **https://oc.mei.biz** 看到与本机 `http://127.0.0.1:9001` **一模一样**的官方 opencode 网页界面（全部功能：会话、diff、终端、命令面板）。

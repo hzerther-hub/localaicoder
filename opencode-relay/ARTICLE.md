@@ -1,3 +1,5 @@
+[English](ARTICLE.en.md) | 中文
+
 # 远程驱动家里 PC 的 opencode：中继、桥与 Nginx 的技术实现
 
 > **最终目的：人在外面，用手机浏览器远程调用自己家里 PC 上的 opencode 干开发活。**

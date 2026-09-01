@@ -17,6 +17,18 @@ a single inbound port on your home network:
   JSON frames — it neither parses nor stores your traffic, and it knows nothing about
   opencode. Swap the controlled backend and only the bridge changes.
 
+## Demo
+
+Open `https://your.domain/s/?d=<token>` on your phone and the home PC is at your fingertips:
+
+![Phone console demo](docs/screenshot-phone-console.png)
+
+*The phone console in action: project/session list on the left, chat on the right. This
+session uploaded a screenshot and asked a vision question; opencode answers while its
+tool calls (`glob …`) stream into the transcript. Model picker and permission mode sit
+at the bottom — everything you see is executed by opencode on the home PC; the phone
+only sends frames and renders the stream.*
+
 ## Architecture
 
 ```

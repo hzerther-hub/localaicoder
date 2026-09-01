@@ -21,7 +21,6 @@ import DispatchPanel from './components/DispatchPanel'
 import CachePanel from './components/CachePanel'
 import ShotOverlay from './components/ShotOverlay'
 import TerminalDrawer from './components/TerminalDrawer'
-import BrowserPanel from './components/BrowserPanel'
 import AnnotateModal from './components/AnnotateModal'
 
 export default function App() {
@@ -68,8 +67,8 @@ export default function App() {
             onClick={() => useStore.getState().setShowSchedulePanel(true)}>🕐</button>
           <button title={t('移动端远程控制（扫码 / Bot 渠道）', 'Mobile remote (QR / bot channels)')}
             onClick={() => useStore.getState().setShowMobilePanel(true)}>📱</button>
-          <button title={t('内置浏览器', 'Browser')}
-            onClick={() => useStore.getState().setShowBrowserPanel(true)}>🌐</button>
+          <button title={t('内置浏览器（在编辑器中打开）', 'Browser (opens in editor)')}
+            onClick={() => { useStore.getState().setShowEditor(true); useStore.getState().setShowBrowserPanel(true) }}>🌐</button>
           <button title={t('设置', 'Settings')}
             onClick={() => useStore.getState().setShowSettingsPanel(true)}>⚙</button>
         </div>
@@ -84,7 +83,6 @@ export default function App() {
       <MCPPanel />
       <DispatchPanel />
       <CachePanel />
-      <BrowserPanel />
       <TrashPanel />
       <SchedulePanel />
       <SettingsPanel />

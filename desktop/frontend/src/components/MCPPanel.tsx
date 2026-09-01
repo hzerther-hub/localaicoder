@@ -53,8 +53,9 @@ export default function MCPPanel() {
       }
       // 装完自动连接（复用 ConnectBrowserMCP 的配置写入 + 进程启动）
       const c = await api.connectBrowserMCP(browserType)
+      // ok 只代表连接流程已启动，真实状态由 mcp:reconnected + 轮询刷新徽标
       setBrowserMsg(c?.ok
-        ? t('浏览器 MCP 已安装并连接', 'Browser MCP installed & connected')
+        ? t('浏览器 MCP 已安装，正在连接…', 'Browser MCP installed, connecting…')
         : t('已安装，连接失败: ', 'Installed, connect failed: ') + (c?.error || ''))
     } catch (e: any) {
       setBrowserMsg(t('安装异常: ', 'Install error: ') + (e?.message || ''))

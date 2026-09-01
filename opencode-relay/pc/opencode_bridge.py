@@ -37,7 +37,7 @@ opencode 中继桥（方案 A）——完整说明
    - Bridge._event_pump：消费 SSE 队列，翻译成手机帧下行。
 2. SSE 守护线程（Bridge._sse_thread）：requests 流式读 /event 是阻塞 IO，不能进
    事件循环，故独立线程常驻订阅，收到帧经 call_soon_threadsafe 投回事件循环队列。
-3. 线程池（asyncio.to_thread）：所有对 opencode 的阻塞 HTTP 调用都丢线程池跑，
+3. 线程池（_to_thread 兼容垫片）：所有对 opencode 的阻塞 HTTP 调用都丢线程池跑，
    避免卡住事件循环。
 
 关键协议映射速览
@@ -99,7 +99,25 @@ def log(msg):
 
 
 # ---------------------------------------------------------------------------
-# opencode serve HTTP 封装（每个调用都是阻塞 requests，桥侧一律经 asyncio.to_thread
+# asyncio.to_thread 兼容垫片：Python 3.8 没有该 API（3.9 新增）。
+# 实测 Windows 本机 Python 3.8.6 上每次调用都抛 AttributeError，且多被调用方
+# except 吞掉（如 _models 静默回空列表），因此统一走 run_in_executor 等价实现。
+# ---------------------------------------------------------------------------
+if hasattr(asyncio, "to_thread"):
+    _to_thread = asyncio.to_thread
+else:
+    import functools
+
+    def _to_thread(fn, *args, **kwargs):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        return loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+
+
+# ---------------------------------------------------------------------------
+# opencode serve HTTP 封装（每个调用都是阻塞 requests，桥侧一律经 _to_thread
 # 丢子线程跑，避免阻塞 asyncio 事件循环）
 # ---------------------------------------------------------------------------
 class OpenCodeClient:
@@ -321,7 +339,7 @@ class Bridge:
     - 对中继：_relay_loop 维持一条 WebSocket（/client?d=<token>），收手机帧交给
       _on_phone_frame 分发，下行帧统一经 _send 发出；
     - 对 opencode：_sse_thread 后台订阅 /event SSE，事件进 evq 队列，由 _event_pump
-      消费并翻译成手机帧；所有 HTTP 调用经 asyncio.to_thread 丢线程池。
+      消费并翻译成手机帧；所有 HTTP 调用经 _to_thread 丢线程池。
 
     生命周期：main() 构造后调 run()，进程常驻，断线自动重连。
     """
@@ -337,12 +355,17 @@ class Bridge:
         self.default_model = cfg["opencode"].get("default_model", "")
 
         self.ws = None
-        self.wlock = asyncio.Lock()
-        self.evq = asyncio.Queue()
+        # Lock/Queue 在 Python 3.8/3.9 构造时就绑定当前事件循环，而本对象在
+        # asyncio.run 之外创建——这里先置 None，进 run() 的运行循环后再实例化，
+        # 否则 _event_pump 等会报 "attached to a different loop"。
+        self.wlock = None
+        self.evq = None
         self.loop = None
 
         self.current = ""          # 当前打开的 opencode session id
         self.current_model = self.default_model
+        self._ver = ""             # opencode 版本号（/global/health，见 _opencode_version）
+        self._ver_at = 0.0
         self.running_map = {}      # session_id -> bool（另有 "_tool_seen" 子表做工具 part 去重）
         self._dir_by_sid = {}      # session_id -> 创建目录（session 级调用按目录作用域，见 scoped()）
         self.pending_perms = {}    # permissionID -> Permission(ask 模式等待手机审批)
@@ -482,7 +505,7 @@ class Bridge:
         if t is not None:
             t.cancel()
         try:
-            await asyncio.to_thread(
+            await _to_thread(
                 self.oc.post, f"/session/{sid}/permissions/{pid}", {"response": response})
             log(f"权限应答 {pid} -> {response}")
         except Exception as e:
@@ -618,14 +641,24 @@ class Bridge:
                     await self._send({"type": "session:opened", "id": sid})
             elif t == "workspace":
                 # 手机→PC 同步：切桥的活动工作区（影响 state 显示、git 分支、新会话归属）。
-                # opencode serve 的执行目录由 ?directory= 按会话下发，见 scoped()。
+                # create=true 时目录不存在则先创建。opencode serve 的执行目录由
+                # ?directory= 按会话下发，见 scoped()。
                 d = (frame.get("dir") or "").strip()
-                if d and os.path.isdir(d):
+                err = ""
+                if d and not os.path.isdir(d) and frame.get("create"):
+                    try:
+                        os.makedirs(d, exist_ok=True)
+                        log(f"已创建目录 {d}")
+                    except Exception as e:
+                        err = f"创建目录失败：{e}"
+                if not err and d and os.path.isdir(d):
                     self.workspace = d
                     log(f"工作区切换（手机端）-> {d}")
                     await self._send(await self._state(rid))
                 else:
-                    await self._send({"type": "error", "delta": f"切换失败：目录不存在 {d}", "rid": rid})
+                    if not err:
+                        err = f"切换失败：目录不存在 {d}"
+                    await self._send({"type": "error", "delta": err, "rid": rid})
             elif t == "permission_response":
                 # 手机对 ask 权限的审批结果：allow/deny/always -> once/reject/always
                 await self._respond_phone_permission(frame)
@@ -647,12 +680,12 @@ class Bridge:
                 qid = frame.get("id")
                 answers = frame.get("answers") or []
                 if qid:
-                    await asyncio.to_thread(self.oc.post, f"/question/{qid}/reply",
+                    await _to_thread(self.oc.post, f"/question/{qid}/reply",
                                             {"answers": answers})
             elif t == "question_reject":
                 qid = frame.get("id")
                 if qid:
-                    await asyncio.to_thread(self.oc.post, f"/question/{qid}/reject", {})
+                    await _to_thread(self.oc.post, f"/question/{qid}/reject", {})
         except Exception as e:
             log(f"处理 {t} 失败: {e}")
             traceback.print_exc()
@@ -660,14 +693,14 @@ class Bridge:
 
     async def _session_list(self):
         # 全局会话清单（不带 directory，跨目录全返回）；当前 state 走的是内联版本，此处备用
-        return await asyncio.to_thread(self.oc.get, "/session")
+        return await _to_thread(self.oc.get, "/session")
 
     async def _dir_list(self, path, rid):
         """列出 path 下的子目录。/file 按目录作用域调用，任意绝对路径均可浏览；
         失败（如非项目目录）时回空列表并带 error，前端提示可直接粘贴路径。"""
         url = f"/file?path={quote(path)}&directory={quote(path)}"
         try:
-            nodes = await asyncio.to_thread(self.oc.get, url)
+            nodes = await _to_thread(self.oc.get, url)
             dirs = [
                 {"name": n.get("name"), "path": n.get("absolute") or (path.rstrip("/") + "/" + n.get("name", ""))}
                 for n in nodes
@@ -687,7 +720,7 @@ class Bridge:
             await self._send({"type": "error", "delta": f"目录不存在：{directory}", "rid": rid})
             return
         try:
-            s = await asyncio.to_thread(
+            s = await _to_thread(
                 self.oc.post, scoped("/session", directory),
                 {"title": os.path.basename(directory) or "新会话"})
             sid = (s or {}).get("id")
@@ -719,7 +752,7 @@ class Bridge:
         """懒加载 provider 清单（用于解析无前缀的模型名）。"""
         if self._provider_cache is None:
             try:
-                d = await asyncio.to_thread(self.oc.get, "/config/providers")
+                d = await _to_thread(self.oc.get, "/config/providers")
                 self._provider_cache = (d or {}).get("providers") or []
             except Exception:
                 self._provider_cache = []
@@ -767,7 +800,7 @@ class Bridge:
             if d.startswith("data:image"):
                 imgs.append(d)
             else:
-                p = await asyncio.to_thread(_save_upload, self.workspace, name, d)
+                p = await _to_thread(_save_upload, self.workspace, name, d)
                 if p:
                     paths.append(p)
                 else:
@@ -776,7 +809,7 @@ class Bridge:
         if not sid:
             try:
                 title = text[:40] or (names[0][:40] if names else "新会话")
-                new = await asyncio.to_thread(
+                new = await _to_thread(
                     self.oc.post, scoped("/session", self.workspace), {"title": title})
             except Exception as e:
                 await self._send({"type": "error", "delta": f"新建会话失败：{e}"})
@@ -793,8 +826,8 @@ class Bridge:
         await self._send({"type": "user_message", "session": sid, "text": disp, "images": imgs})
 
         # 确认/创建会话（新会话 born 在当前工作区）
-        if not await asyncio.to_thread(self.oc.session_exists, sid):
-            new = await asyncio.to_thread(self.oc.post, scoped("/session", self.workspace), {"title": text[:40]})
+        if not await _to_thread(self.oc.session_exists, sid):
+            new = await _to_thread(self.oc.post, scoped("/session", self.workspace), {"title": text[:40]})
             sid = (new or {}).get("id", sid)
             self._dir_by_sid[sid] = self.workspace
         self.current = sid
@@ -811,7 +844,7 @@ class Bridge:
             body["model"] = m
         log(f"send -> session={sid} 模型={self.current_model or '(默认)'} 工作区={self._dir_by_sid.get(sid) or self.workspace}")
         try:
-            await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/prompt_async", self._dir_by_sid.get(sid) or self.workspace), body)
+            await _to_thread(self.oc.post, scoped(f"/session/{sid}/prompt_async", self._dir_by_sid.get(sid) or self.workspace), body)
         except Exception as e:
             log(f"prompt_async 失败: {e}")
             await self._send({"type": "error", "delta": f"发送失败：{e}"})
@@ -821,25 +854,25 @@ class Bridge:
         # 立即收尾，不等 SSE 的 session.idle 事件
         sid = frame.get("session")
         if sid:
-            await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/abort", self._dir_by_sid.get(sid)), None)
+            await _to_thread(self.oc.post, scoped(f"/session/{sid}/abort", self._dir_by_sid.get(sid)), None)
             await self._send({"type": "run:finished", "sessionId": sid})
 
     async def _handle_delete(self, sid):
         # 删除会话（opencode 侧进垃圾箱，可恢复）；顺手清掉运行标记
         if sid:
-            await asyncio.to_thread(self.oc.delete, f"/session/{sid}")
+            await _to_thread(self.oc.delete, f"/session/{sid}")
             self.running_map.pop(sid, None)
 
     async def _handle_rename(self, sid, title):
         # 改标题：PATCH /session/:id，空标题直接忽略
         if sid and title and title.strip():
-            await asyncio.to_thread(self.oc.patch, f"/session/{sid}", {"title": title.strip()})
+            await _to_thread(self.oc.patch, f"/session/{sid}", {"title": title.strip()})
 
     # ---- opencode 斜杠命令：列表下发 + 执行 ----
     async def _commands(self, rid):
         """GET /command：真实命令清单（.opencode/command 自定义、skill、mcp 来源）。"""
         try:
-            data = await asyncio.to_thread(self.oc.get, scoped("/command", self.workspace))
+            data = await _to_thread(self.oc.get, scoped("/command", self.workspace))
         except Exception:
             data = []
         out = [{"name": c.get("name") or "", "description": (c.get("description") or "").strip(),
@@ -849,9 +882,9 @@ class Bridge:
 
     async def _ensure_session(self, sid, title):
         """会话为空或已不存在时，在当前工作区新建一个；返回可用 sid。"""
-        if sid and await asyncio.to_thread(self.oc.session_exists, sid):
+        if sid and await _to_thread(self.oc.session_exists, sid):
             return sid
-        new = await asyncio.to_thread(self.oc.post, scoped("/session", self.workspace), {"title": title})
+        new = await _to_thread(self.oc.post, scoped("/session", self.workspace), {"title": title})
         nid = (new or {}).get("id", "")
         if nid:
             self._dir_by_sid[nid] = self.workspace
@@ -886,37 +919,37 @@ class Bridge:
         directory = self._dir_by_sid.get(sid) or self.workspace
         try:
             if cmd == "undo":       # 撤销最近一条消息（连带回滚其文件改动）
-                msgs = await asyncio.to_thread(self.oc.get, scoped(f"/session/{sid}/message", directory))
+                msgs = await _to_thread(self.oc.get, scoped(f"/session/{sid}/message", directory))
                 mid = ((msgs or [{}])[-1].get("info") or {}).get("id") or ""
                 if not mid:
                     await self._send({"type": "error", "delta": "没有可撤销的消息"})
                     return
-                await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/revert", directory),
+                await _to_thread(self.oc.post, scoped(f"/session/{sid}/revert", directory),
                                         {"messageID": mid})
             elif cmd == "redo":     # 恢复被 undo 的消息
-                await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/unrevert", directory), {})
+                await _to_thread(self.oc.post, scoped(f"/session/{sid}/unrevert", directory), {})
             elif cmd == "compact":  # 手动压缩上下文（summarize）
                 m = await self._resolve_model()
                 if not m:
                     await self._send({"type": "error", "delta": "compact 需要先选模型（providerID/modelID）"})
                     return
-                await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/summarize", directory),
+                await _to_thread(self.oc.post, scoped(f"/session/{sid}/summarize", directory),
                                         {"providerID": m["providerID"], "modelID": m["modelID"]})
             elif cmd == "share":
-                s = await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/share", directory), {})
+                s = await _to_thread(self.oc.post, scoped(f"/session/{sid}/share", directory), {})
                 sh = (s or {}).get("share") if isinstance(s, dict) else None
                 link = (sh or {}).get("url") or (s or {}).get("url") or ""
                 await self._send({"type": "text",
                                   "delta": f"🔗 分享链接：{link}" if link else "已分享（未返回链接）"})
                 return
             elif cmd == "unshare":
-                await asyncio.to_thread(self.oc.delete, scoped(f"/session/{sid}/share", directory))
+                await _to_thread(self.oc.delete, scoped(f"/session/{sid}/share", directory))
             elif cmd == "diff":     # 本次会话的代码改动（专用端点，回退 vcs 全局 diff）
                 try:
-                    d = await asyncio.to_thread(
+                    d = await _to_thread(
                         self.oc.get, scoped(f"/session/{sid}/diff", directory))
                 except Exception:
-                    d = await asyncio.to_thread(self.oc.get, scoped("/vcs/diff", directory))
+                    d = await _to_thread(self.oc.get, scoped("/vcs/diff", directory))
                 if isinstance(d, list):
                     parts = []
                     for it in d:
@@ -936,9 +969,9 @@ class Bridge:
                 await self._send({"type": "diff", "session": sid, "delta": txt or "（无改动）"})
                 return
             elif cmd == "init":     # 让 opencode 分析代码库生成 AGENTS.md
-                await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/init", directory), {})
+                await _to_thread(self.oc.post, scoped(f"/session/{sid}/init", directory), {})
             else:                   # 自定义命令（.opencode/command、skill、mcp）
-                await asyncio.to_thread(self.oc.post, scoped(f"/session/{sid}/command", directory),
+                await _to_thread(self.oc.post, scoped(f"/session/{sid}/command", directory),
                                         {"command": cmd, "arguments": args})
         except Exception as e:
             await self._send({"type": "error", "delta": f"/{cmd} 失败：{e}"})
@@ -946,6 +979,19 @@ class Bridge:
         await self._send({"type": "command_result", "session": sid, "command": cmd, "ok": True})
 
     # ---- 手机页需要的几类应答帧 ----
+    async def _opencode_version(self):
+        """opencode 版本号（/global/health 的 version 字段），10 分钟缓存；失败返回空串。
+        手机页在标题旁以 v1.18.x 角标展示。"""
+        if self._ver and time.time() - self._ver_at < 600:
+            return self._ver
+        try:
+            d = await _to_thread(self.oc.get, "/global/health")
+            self._ver = (d or {}).get("version") or ""
+        except Exception:
+            self._ver = ""
+        self._ver_at = time.time()
+        return self._ver
+
     def _git_branch(self):
         # 当前工作区的 git 分支名（同步阻塞，只在 _state 组帧时调一次；
         # 非 git 目录/无 git 命令返回空串，手机端就不显示分支角标）
@@ -964,7 +1010,7 @@ class Bridge:
         目录，靠这里补齐，保证后续该会话级调用都带对 directory。
         """
         try:
-            sessions = await asyncio.to_thread(self.oc.get, "/session")
+            sessions = await _to_thread(self.oc.get, "/session")
         except Exception:
             sessions = []
         self._dir_by_sid = {s.get("id"): (s.get("directory") or s.get("path") or "") for s in sessions or []}
@@ -972,6 +1018,7 @@ class Bridge:
             "type": "state", "rid": rid,
             "workspace": self.workspace, "mode": self.mode, "current": self.current_model,
             "current_session": self.current, "branch": self._git_branch(), "compact": {},
+            "version": await self._opencode_version(),
             "sessions": oc_sessions_to_phone(sessions, self.running_map, {}),
         }
 
@@ -988,7 +1035,7 @@ class Bridge:
         if not sid:
             return {"type": "messages", "rid": rid, "id": sid, "messages": []}
         try:
-            data = await asyncio.to_thread(self.oc.get, scoped(f"/session/{sid}/message", self._dir_by_sid.get(sid)))
+            data = await _to_thread(self.oc.get, scoped(f"/session/{sid}/message", self._dir_by_sid.get(sid)))
         except Exception:
             return {"type": "messages", "rid": rid, "id": sid, "messages": []}
         msgs = []
@@ -1031,7 +1078,7 @@ class Bridge:
         - vision/reasoning 从 capabilities 推导，手机端用来打能力角标。
         """
         try:
-            d = await asyncio.to_thread(self.oc.get, "/config/providers")
+            d = await _to_thread(self.oc.get, "/config/providers")
         except Exception:
             return {"type": "models", "rid": rid, "models": []}
         default = d.get("default") or {}
@@ -1064,6 +1111,8 @@ class Bridge:
         （交给 systemd/supervisor 拉起），不做内部静默重生。
         """
         self.loop = asyncio.get_running_loop()
+        self.wlock = asyncio.Lock()
+        self.evq = asyncio.Queue()
         threading.Thread(target=self._sse_thread, daemon=True).start()
         await asyncio.gather(self._relay_loop(), self._event_pump())
 

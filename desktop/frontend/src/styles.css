@@ -586,8 +586,8 @@ select option { background: var(--bg-panel); color: var(--text); }
   z-index: 90;
 }
 .modal {
-  width: min(640px, 92vw);
-  max-height: 82vh;
+  width: min(800px, 92vw);
+  max-height: 92vh;
   overflow-y: auto;
   background: var(--bg-panel);
   border: 1px solid var(--border-strong);
@@ -802,6 +802,42 @@ select option { background: var(--bg-panel); color: var(--text); }
 .ctx-menu {
   position: fixed; min-width: 160px;
   background: var(--bg-raised); border: 1px solid var(--border-strong);
+
+/* 书签面板 */
+.bookmark-list-panel {
+  position: absolute; top: 42px; right: 12px; bottom: 12px;
+  width: 280px; background: var(--bg-raised); border: 1px solid var(--border-strong);
+  border-radius: 10px; display: flex; flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3); z-index: 100;
+}
+.bookmark-list-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
+.bookmark-list-body { flex: 1; overflow-y: auto; padding: 8px 0; }
+.bookmark-empty { text-align: center; padding: 24px; color: var(--text-faint); font-size: 12px; }
+.bookmark-group { margin-bottom: 8px; }
+.bookmark-path {
+  padding: 6px 14px; font-size: 11px; color: var(--text-faint);
+  font-family: var(--mono); border-bottom: 1px solid var(--border);
+}
+.bookmark-item {
+  padding: 6px 14px; cursor: pointer; font-size: 12px;
+  color: var(--text-dim); display: flex; align-items: center; gap: 8px;
+  transition: background 0.15s;
+}
+.bookmark-item:hover { background: var(--bg-hover); color: var(--text); }
+.bookmark-line {
+  font-family: var(--mono); font-size: 11px; color: var(--accent);
+  background: var(--bg); padding: 2px 8px; border-radius: 4px;
+}
+.bookmark-list-footer {
+  padding: 8px 14px; border-top: 1px solid var(--border);
+  display: flex; justify-content: flex-end;
+}
+
+/* 树/编辑区内部分隔条 */
   border-radius: 10px; box-shadow: var(--shadow); padding: 4px;
   display: flex; flex-direction: column;
 }
@@ -873,7 +909,7 @@ select option { background: var(--bg-panel); color: var(--text); }
 .st-dot.on { background: var(--green); }
 
 /* 移动端远程控制面板 */
-.mobile-modal { min-width: 780px; max-width: 900px; }
+.mobile-modal { min-width: 980px; max-width: 1120px; }
 .mobile-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; }
 .mobile-card {
   background: var(--bg-raised); border: 1px solid var(--border);
@@ -1218,6 +1254,24 @@ select option { background: var(--bg-panel); color: var(--text); }
   align-items: center;
 }
 
+/* 底部状态栏：后台运行中的会话入口（点击切换过去） */
+.usage-bar .runs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 8px;
+  border-radius: 8px;
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.usage-bar .runs-chip:hover { filter: brightness(1.25); }
+
 /* ---------------- 技能面板 ---------------- */
 .skills-sec { margin-top: 14px; }
 .skills-sec-title { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
@@ -1437,6 +1491,8 @@ select option { background: var(--bg-panel); color: var(--text); }
 }
 .browser-url-bar button:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); }
 
+.editor-browser { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding: 12px 14px; background: var(--bg); }
+.editor-browser.hidden { display: none !important; }
 .browser-preview {
   flex: 1;
   min-height: 280px;

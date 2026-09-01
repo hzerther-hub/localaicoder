@@ -43,6 +43,13 @@ __pycache__/
 .ocdata/
 /relay-server/config.json
 /relay-server/opencode_bridge.json
+/opencode-relay/config.json
 /opencode-relay/service/config.json
 /opencode-relay/pc/opencode_bridge.json
+/opencode-relay/.run/
 /zhipai-proxy/config.json
+
+# 桌面本机运行产物（勿提交）
+desktop/.gotmp/
+desktop/.playwright-mcp/
+AGENTS.md.local.bak

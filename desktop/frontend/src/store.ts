@@ -392,6 +392,8 @@ export const useStore = create<UIState>((set, get) => {
         routingActive: sid === st.sessionId ? false : st.routingActive,
         routeModel: sid === st.sessionId ? null : st.routeModel })
       syncRunning()
+      // 新建即跑的会话（手机端新建/定时任务等）还没进列表：立刻刷新，侧栏才看得见它
+      void get().refreshSessions()
     })
     onEvent('run:finished', (d) => {
       const finSid = d?.sessionId || get().sessionId

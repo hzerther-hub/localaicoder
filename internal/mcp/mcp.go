@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -41,9 +42,10 @@ func safeName(s string) string { return unsafeRe.ReplaceAllString(s, "_") }
 // ---------------- 客户端 ----------------
 
 type clientBase struct {
-	name    string
-	tools   []map[string]any
-	sendMu  sync.Mutex
+	name        string
+	tools       []map[string]any
+	sendMu      sync.Mutex
+	onDisconnect func(error) // 进程退出时回调
 }
 
 // Start initialize 握手 → tools/list；返回工具定义列表。
@@ -188,6 +190,7 @@ type StdioClient struct {
 	clientBase
 	proc    *exec.Cmd
 	stdin   io.WriteCloser
+	errFile *os.File // MCP 进程 stderr 日志
 	mu      sync.Mutex
 	pending map[int64]chan map[string]any
 	nextID  int64
@@ -214,19 +217,38 @@ func NewStdioClient(name string, command string, args []string, env []string, cw
 	if err != nil {
 		return nil, err
 	}
-	c.proc.Stderr = nil
+	// 捕获 MCP 进程的 stderr 到日志文件（方便诊断）
+	logDir := config.Dir()
+	if logDir == "" {
+		logDir = filepath.Join(os.TempDir(), "localai-mcp-logs")
+	}
+	var errFile *os.File
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		log.Printf("[mcp] 创建日志目录失败：%v", err)
+	} else {
+		var err2 error
+		errFile, err2 = os.OpenFile(filepath.Join(logDir, "mcp_"+name+".log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err2 == nil {
+			c.proc.Stderr = errFile
+			c.errFile = errFile
+			log.Printf("[mcp] 日志写入 %s", errFile.Name())
+		} else {
+			log.Printf("[mcp] 创建日志文件失败：%v", err2)
+		}
+	}
 	if err := c.proc.Start(); err != nil {
 		return nil, err
 	}
 	c.stdin = stdin
 	go c.readLoop(stdout)
+	go c.watchProcessExit() // 监控进程退出
 	return c, nil
 }
 
 // readLoop 读器 goroutine：按行读 JSON，按 id 分发响应。
 func (c *StdioClient) readLoop(r io.Reader) {
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 4<<20), 4<<20)
+	scanner.Buffer(make([]byte, 32<<20), 32<<20)
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -247,6 +269,20 @@ func (c *StdioClient) readLoop(r io.Reader) {
 		if ok {
 			ch <- m
 		}
+	}
+}
+
+// watchProcessExit 监控 MCP 进程退出，进程退出后关闭连接并通知上层。
+func (c *StdioClient) watchProcessExit() {
+	err := c.proc.Wait()
+	if c.errFile != nil {
+		c.errFile.Close()
+		c.errFile = nil
+	}
+	log.Printf("[mcp] %s 进程退出：code=%v err=%v", c.name, c.proc.ProcessState, err)
+	// 通知上层连接断开
+	if c.onDisconnect != nil {
+		c.onDisconnect(fmt.Errorf("MCP 进程 %s 已退出", c.name))
 	}
 }
 
@@ -358,7 +394,7 @@ func (c *HTTPClient) post(body map[string]any, timeout time.Duration) ([]map[str
 	var messages []map[string]any
 	if strings.Contains(ct, "text/event-stream") {
 		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 4<<20), 4<<20)
+		scanner.Buffer(make([]byte, 32<<20), 32<<20)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if !strings.HasPrefix(line, "data:") {
@@ -543,6 +579,18 @@ func (m *Manager) Connect(onLog func(string)) {
 				}
 			}
 			c, err = NewStdioClient(name, cmd, args, env, msg.S(cfg, "cwd"))
+			if err == nil {
+				if sc, ok := c.(*StdioClient); ok && onLog != nil {
+					sc.onDisconnect = func(err error) {
+						m.mu.Lock()
+						delete(m.clients, name)
+						delete(m.toolMap, "mcp_"+safeName(name)+"_")
+						m.connected = len(m.clients) > 0
+						m.mu.Unlock()
+						onLog(fmt.Sprintf("MCP %s 已断开：%v", name, err))
+					}
+				}
+			}
 		} else {
 			continue
 		}
@@ -627,6 +675,22 @@ func (m *Manager) IsWriteTool(name string) bool {
 		return false
 	}
 	return !m.readonly[t.server]
+}
+
+// FindTool 在指定 server 的工具里按候选真实工具名挑第一个存在的，返回完整调用名
+// （mcp_<server>_<tool>）；都没有返回空串。不同 MCP 包对同类工具命名不同
+// （如 chrome-devtools 的 take_screenshot 与 playwright 的 browser_take_screenshot）。
+func (m *Manager) FindTool(server string, candidates ...string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, cand := range candidates {
+		for k, t := range m.toolMap {
+			if t.server == server && t.tool == cand {
+				return k
+			}
+		}
+	}
+	return ""
 }
 
 // Call 路由调用；错误作为文本返回（循环不中断）。

@@ -46,6 +46,13 @@ export default function StatsBar() {
   const turnCount = useStore((s) => s.turnCount)
   const lastThroughput = useStore((s) => s.lastThroughput)
   const compact = useStore((s) => s.compact)
+  const runs = useStore((s) => s.runs)
+  const sessionId = useStore((s) => s.sessionId)
+  const loadSession = useStore((s) => s.loadSession)
+  // 后台运行中、且不是当前正打开的会话——给一个可点击的可见入口
+  const bgRuns = runs.filter((r) => r.sessionId !== sessionId)
+  const sessions = useStore((s) => s.sessions)
+  const bgTitles = bgRuns.map((r) => sessions.find((x) => x.id === r.sessionId)?.title || t('新会话', 'New session'))
   const mi = models.find((m) => m.key === currentModel)
   const modelName = mi?.model_id || currentModel.split('/').pop() || '—'
 
@@ -65,6 +72,16 @@ export default function StatsBar() {
         {running ? <ThinkingDots className="sm busy" /> : <span className="status-dot" />}
         {modelName}
       </span>
+      {bgRuns.length > 0 && (
+        <span
+          className="runs-chip"
+          title={`${t('后台运行中', 'running in background')}：${bgTitles.join('、')}`}
+          onClick={() => { const r = bgRuns[0]; if (r) void loadSession(r.sessionId) }}
+        >
+          <ThinkingDots className="sm" /> {bgTitles[0]}
+          {bgRuns.length > 1 ? ` +${bgRuns.length - 1}` : ''}
+        </span>
+      )}
       <i className="sep">·</i>
       {workspace && (
         <span title={workspace}>⌂ {shortPath(workspace)}</span>

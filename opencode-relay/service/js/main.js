@@ -148,6 +148,7 @@ function applyState(s){
  runs=new Set(ALL.filter(x=>x.running).map(x=>x.id));
  renderSteps();
  try{$('modeSel').value=s.mode||'always'}catch(e){}
+ try{$('ver').textContent=s.version?('v'+s.version):''}catch(e){}
  const _cur=s.current||'';if(_cur&&_cur!==lastCurrent){lastCurrent=_cur;loadModels();}
  const _cs=s.current_session||'';if(_cs&&_cs!==sid&&!cur){openS(_cs,false);}
  // 流式渲染中（cur 存在）不自动跳转/清屏，防止把刚发出的回显和回复洗掉

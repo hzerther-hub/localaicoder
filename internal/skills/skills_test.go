@@ -301,6 +301,70 @@ func TestPromptSection(t *testing.T) {
 	}
 }
 
+func TestPromptSectionDerivedTriggers(t *testing.T) {
+	setup(t)
+	config.SetSkillsEnabled(true)
+	ws := t.TempDir()
+	// 导入型技能：不填 when，只靠名称与描述自动推导
+	_, _ = Save(Skill{Name: "xlsx", Description: "Create and edit Excel spreadsheets, formulas, charting", Body: "表格指引"}, ScopeUser, "")
+	_, _ = Save(Skill{Name: "meeting-notes", Description: "Summarize meeting minutes and discussions", Body: "纪要指引"}, ScopeUser, "")
+	// 中文消息提及 excel：应经描述词命中 xlsx 并排在无关技能前
+	sec := PromptSection(ws, "帮我做一个excel表格统计销量")
+	if !strings.Contains(sec, "xlsx") {
+		t.Fatalf("无 when 也应按名称/描述命中: %s", sec)
+	}
+	if idx := strings.Index(sec, "xlsx"); idx > strings.Index(sec, "meeting-notes") {
+		t.Fatalf("推导命中的技能应排前: %s", sec)
+	}
+	// 反向前缀匹配：用户写短词 ppt 也能命中名称为 pptx 的技能
+	_, _ = Save(Skill{Name: "pptx", Description: "Create slide presentations", Body: "幻灯片指引"}, ScopeUser, "")
+	sec = PromptSection(ws, "做一份ppt")
+	if !strings.Contains(sec, "pptx") {
+		t.Fatalf("用户短词 ppt 应前缀命中 pptx: %s", sec)
+	}
+	if idx := strings.Index(sec, "pptx"); idx > strings.Index(sec, "meeting-notes") {
+		t.Fatalf("前缀命中的技能应排前: %s", sec)
+	}
+	// 显式 when 命中优先于推导命中
+	_, _ = Save(Skill{Name: "alpha-guide", Description: "presentation deck guidance", When: "deck", Body: "a"}, ScopeUser, "")
+	sec = PromptSection(ws, "给我做一份 deck 和 ppt")
+	if idx := strings.Index(sec, "alpha-guide"); idx > strings.Index(sec, "pptx") {
+		t.Fatalf("显式 when 命中应排在推导命中前: %s", sec)
+	}
+}
+
+func TestDeriveNameAndWords(t *testing.T) {
+	setup(t)
+	sk := Skill{Name: "mcp-builder", Description: "Guide for creating MCP servers that expose tools. Servers, tools, data."}
+	if got := deriveNameWords(sk.Name); fmt.Sprint(got) != "[builder mcp]" {
+		t.Fatalf("名称分词异常: %v", got)
+	}
+	// 描述/正文词：剥尾部 s、滤停用词（原形与变形都查）、≥4 字母、排序确定
+	got := deriveWords(sk)
+	want := []string{"creating", "data", "expose", "guide", "server"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("推导词应去重/剥 s/滤停用词/排序: got %v want %v", got, want)
+	}
+	if again := deriveWords(sk); fmt.Sprint(again) != fmt.Sprint(want) {
+		t.Fatalf("推导应确定: %v vs %v", again, got)
+	}
+}
+
+func TestSkillScore(t *testing.T) {
+	setup(t)
+	// 显式 when 命中权重高于推导命中
+	withWhen := Skill{Name: "unrelated-name", Description: "totally different topic", When: "部署"}
+	derived := Skill{Name: "deploy", Description: "deployment pipeline guidance"}
+	ut := "帮我部署一下服务"
+	if skillScore(withWhen, ut) <= skillScore(derived, ut) {
+		t.Fatalf("显式 when 命中应得分更高: when=%d derive=%d", skillScore(withWhen, ut), skillScore(derived, ut))
+	}
+	// 全不命中为 0（名称序补位不受影响）
+	if s := skillScore(Skill{Name: "other", Description: "cooking recipes"}, ut); s != 0 {
+		t.Fatalf("不命中应为 0 分: %d", s)
+	}
+}
+
 func TestSerializeMessagesStripsImages(t *testing.T) {
 	setup(t)
 	msgs := []msg.Msg{

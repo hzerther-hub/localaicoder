@@ -142,15 +142,19 @@ export default function ModelPanel() {
     await api.saveProvider(draft.id, draft.name, draft.base_url, draft.api_key, draft.api_format, apiKeys)
     setEditing(false)
     setCandidates(null)
+    setSel(draft.id) // 新建后立即选中（0 模型的供应商也要可见可选）
     reload()
     refresh()
   }
   const addModel = async () => {
     if (!newModel.trim() || !cur) return
-    await api.addProviderModel(cur.id, newModel.trim(), false)
+    const ok = await api.addProviderModel(cur.id, newModel.trim(), false)
     setNewModel('')
     reload()
     refresh()
+    // 不再静默：失败/重复时给出可见反馈，避免「点了没反应」
+    setTip(ok ? t('已添加', 'Added') : t('模型已存在或添加失败', 'Already exists or failed'))
+    setTimeout(() => setTip(''), 1800)
   }
 
   return (
@@ -178,7 +182,10 @@ export default function ModelPanel() {
               </div>
             ))}
             <button className="mm-add-provider" onClick={() => {
-              setDraft({ id: 'custom', name: t('自定义', 'Custom'), base_url: '', api_key: '', api_format: 'chat_completions', api_keys: [], enabled: true, models: [] })
+              // 每个新供应商必须拿唯一 id：历史上这里写死 'custom'，第二个供应商
+              // 保存时按 id 覆盖第一个（name/base_url/key 全被带走，模型却留下）——合并事故。
+              const id = 'custom-' + Date.now().toString(36)
+              setDraft({ id, name: t('自定义', 'Custom'), base_url: '', api_key: '', api_format: 'chat_completions', api_keys: [], enabled: true, models: [] })
               setEditing(true); setErr('')
             }}>＋ {t('添加供应商', 'Add provider')}</button>
           </div>

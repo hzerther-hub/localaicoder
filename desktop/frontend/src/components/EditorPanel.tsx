@@ -26,6 +26,7 @@ import { sql } from '@codemirror/legacy-modes/mode/sql'
 import { api, DirEntry, DiagItem, onEvent } from '../bridge'
 import { useStore, t } from '../store'
 import ThinkingDots from './ThinkingDots'
+import BrowserView from './BrowserView'
 
 interface Tab { path: string; content: string; saved: string }
 
@@ -116,6 +117,7 @@ const diagField = StateField.define<DecorationSet>({
 export default function EditorPanel() {
   const workspace = useStore((s) => s.workspace)
   const setShowEditor = useStore((s) => s.setShowEditor)
+  const showBrowserPanel = useStore((s) => s.showBrowserPanel)
   const [tabs, setTabs] = useState<Tab[]>([])
   const [active, setActive] = useState<string | null>(null)
   const [tree, setTree] = useState<DirEntry[]>([])
@@ -129,7 +131,53 @@ export default function EditorPanel() {
   const [panelMin, setPanelMin] = useState(false)
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; path: string; isDir: boolean } | null>(null)
   const [treeV, setTreeV] = useState(0)
+  const [bookmarks, setBookmarks] = useState<Record<string, number[]>>({}) // path -> line numbers
+  const [showBookmarkList, setShowBookmarkList] = useState(false)
   const running = useStore((s) => s.running)
+
+  // ---- 书签功能 ----
+  const toggleBookmark = () => {
+    const path = activeRef.current
+    if (!path || !viewRef.current) return
+    const pos = viewRef.current.state.selection.main.head
+    const line = viewRef.current.state.doc.lineAt(pos).number
+    setBookmarks(prev => {
+      const lines = prev[path] || []
+      if (lines.includes(line)) {
+        return { ...prev, [path]: lines.filter(l => l !== line) }
+      }
+      return { ...prev, [path]: [...lines, line].sort((a, b) => a - b) }
+    })
+  }
+
+  const jumpToBookmark = (line: number) => {
+    if (!viewRef.current) return
+    const pos = viewRef.current.state.doc.line(line).from
+    viewRef.current.dispatch({
+      selection: { anchor: pos },
+      effects: [EditorView.scrollIntoView(pos, { y: 'center' })],
+    })
+    setShowBookmarkList(false)
+  }
+
+  const clearBookmarks = () => {
+    const path = activeRef.current
+    if (path) setBookmarks(prev => { const n = { ...prev }; delete n[path]; return n })
+  }
+
+  // 保存/加载书签到 localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('las_bookmarks')
+      if (saved) setBookmarks(JSON.parse(saved))
+    } catch { /* 忽略 */ }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('las_bookmarks', JSON.stringify(bookmarks))
+    } catch { /* 忽略 */ }
+  }, [bookmarks])
   const locked = false // 不再锁定编辑器（并发编辑）；仅用 running 做提示
   const readOnlyComp = useRef(new Compartment())
   const hostRef = useRef<HTMLDivElement>(null)
@@ -138,6 +186,15 @@ export default function EditorPanel() {
   const activeRef = useRef<string | null>(null)
   tabsRef.current = tabs
   activeRef.current = active
+
+  // 底栏 🌐 入口：在编辑器里打开「浏览」标签（不再弹独立大窗）
+  useEffect(() => {
+    if (showBrowserPanel) {
+      setShowEditor(true)
+      setActive('__browser__')
+      useStore.getState().setShowBrowserPanel(false)
+    }
+  }, [showBrowserPanel, setShowEditor])
 
   // 工作区（项目）切换：按项目记忆编辑现场——
   // 切走时保存该项目打开的页签，切回时原样恢复（选区/滚动经 savedEditorStates 一并还原）；
@@ -407,6 +464,14 @@ export default function EditorPanel() {
         >
           📁 {t('文件', 'Files')}
         </div>
+        {/* 浏览标签：内置浏览器嵌入编辑区（与源码标签互切，互不影响） */}
+        <div
+          className={`editor-tab${active === '__browser__' ? ' active' : ''}`}
+          onClick={() => setActive('__browser__')}
+          title={t('内置浏览器', 'Built-in browser')}
+        >
+          🌐 {t('浏览', 'Browse')}
+        </div>
         {tabs.map((tab) => (
           <div
             key={tab.path}
@@ -439,7 +504,7 @@ export default function EditorPanel() {
       </div>
 
       {/* Tk 式页签视图：两视图常驻（CSS 隐藏切换），目录展开状态不丢失 */}
-      <div className={`file-tree full${active === null || !activeTab ? '' : ' hidden'}`} key={workspace + ':' + treeV}>
+      <div className={`file-tree full${active === null || (!activeTab && active !== '__browser__') ? '' : ' hidden'}`} key={workspace + ':' + treeV}>
         <TreeNode path="" name={workspace || '.'} isDir depth={0}
           onFile={openFile} defaultOpen
           onCtx={(path, isDir, x, y) => setCtxMenu({ x, y, path, isDir })} />
@@ -484,10 +549,28 @@ ${r.output}`)
             ) : <span className="dim">{t('高亮 ✓ · 无 LSP', 'highlight only')}</span>
           )}
           <span style={{ marginLeft: 'auto' }} />
+          <button
+            className="btn tiny"
+            onClick={toggleBookmark}
+            title={t('切换书签（当前行）', 'Toggle bookmark (current line)')}
+          >
+            🔖 {t('书签', 'Bookmark')}
+          </button>
+          <button
+            className="btn tiny"
+            onClick={() => setShowBookmarkList(!showBookmarkList)}
+            title={t('书签列表', 'Bookmark list')}
+          >
+            📑 {t('列表', 'List')}
+          </button>
           <button className="btn tiny" onClick={saveActive} disabled={!activeTab || activeTab.content === activeTab.saved}>
             💾 {t('保存', 'Save')}
           </button>
         </div>
+      </div>
+      {/* 浏览视图：与文件树/源码视图三选一显示（浏览器连接状态在标签切换间保持） */}
+      <div className={`editor-browser${active === '__browser__' ? '' : ' hidden'}`}>
+        <BrowserView />
       </div>
       {ctxMenu && (
         <div className="ctx-mask" onClick={() => setCtxMenu(null)}
@@ -521,6 +604,36 @@ ${r.output}`)
       )}
       {running && (
         <div className="ai-lock-banner">🤖 {t('AI 正在修改代码，可并行编辑（运行结束后同步）', 'AI is editing — you can keep editing; changes sync after the run')}</div>
+      )}
+      {/* 书签列表面板 */}
+      {showBookmarkList && (
+        <div className="bookmark-list-panel">
+          <div className="bookmark-list-header">
+            <span>📑 {t('书签列表', 'Bookmarks')}</span>
+            <button className="btn tiny" onClick={() => setShowBookmarkList(false)}>✕</button>
+          </div>
+          <div className="bookmark-list-body">
+            {Object.entries(bookmarks).length === 0 ? (
+              <div className="bookmark-empty">{t('暂无书签', 'No bookmarks yet')}</div>
+            ) : (
+              Object.entries(bookmarks).map(([path, lines]) => (
+                <div key={path} className="bookmark-group">
+                  <div className="bookmark-path">{path.split('/').pop()}</div>
+                  {lines.map(line => (
+                    <div key={line} className="bookmark-item" onClick={() => jumpToBookmark(line)}>
+                      <span className="bookmark-line">L{line}</span>
+                    </div>
+                  ))}
+                </div>
+              ))
+            )}
+          </div>
+          <div className="bookmark-list-footer">
+            <button className="btn tiny" onClick={clearBookmarks}>
+              {t('清空当前文件书签', 'Clear current file')}
+            </button>
+          </div>
+        </div>
       )}
       </div>
     </div>

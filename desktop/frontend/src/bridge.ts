@@ -106,6 +106,7 @@ export const api = {
   getSmartRouting: () => call<Record<string, any>>('GetSmartRouting'),
   setSmartRouting: (block: Record<string, any>) => call<void>('SetSmartRouting', block),
   getMCPServers: () => call<Record<string, any>>('GetMCPServers'),
+  saveMCPServers: (servers: Record<string, any>) => call<void>('SaveMCPServers', servers),
   saveMCPServer: (name: string, cfg: Record<string, any>) => call<void>('SaveMCPServer', name, cfg),
   deleteMCPServer: (name: string) => call<void>('DeleteMCPServer', name),
   reconnectMCP: () => call<void>('ReconnectMCP'),
@@ -127,6 +128,7 @@ export const api = {
   listSessions: (ws: string, q: string) => call<SessionMeta[]>('ListSessions', ws, q),
   deleteSession: (id: string) => call<boolean>('DeleteSession', id),
   renameSession: (id: string, t: string) => call<boolean>('RenameSession', id, t),
+  moveSession: (id: string, ws: string) => call<boolean>('MoveSessionToWorkspace', id, ws),
   readFileText: (p: string) => call<string>('ReadFileText', p),
   writeFileText: (p: string, c: string) => call<void>('WriteFileText', p, c),
   listDir: (rel: string) => call<DirEntry[]>('ListDir', rel),
@@ -205,7 +207,7 @@ export const api = {
   // 浏览器 MCP
   checkBrowserMCPStatus: () => call<string>('CheckBrowserMCPStatus'),
   getAvailableBrowsers: () => call<Array<{type: string; name: string; description: string; installed: boolean}>>('GetAvailableBrowsers'),
-  connectBrowserMCP: (browserType?: string) => call<{ok: boolean; msg?: string; error?: string}>('ConnectBrowserMCP', browserType || 'chrome-devtools'),
+  connectBrowserMCP: (browserType?: string, headless?: boolean) => call<{ok: boolean; msg?: string; error?: string}>('ConnectBrowserMCP', browserType || 'chrome-devtools', !!headless),
   installBrowserMCP: (browserType: string) => call<{ok: boolean; msg?: string; output?: string; error?: string}>('InstallBrowserMCP', browserType),
   disconnectBrowserMCP: () => call<void>('DisconnectBrowserMCP'),
   browserNavigate: (url: string) => call<{ok: boolean; result?: string; screenshot?: string; error?: string}>('BrowserNavigate', url),
@@ -218,8 +220,8 @@ export const api = {
 export function onEvent(name: string, cb: (data: any) => void) {
   const rt = w().runtime
   if (rt?.EventsOn) {
-    rt.EventsOn(name, cb)
-    return () => {}
+    // 透传 EventsOn 自带的取消函数；否则组件反复开关会堆积重复监听
+    return rt.EventsOn(name, cb) as () => void
   }
   // mock 模式：agent:event 等由 mockRun 模拟
   mockListeners(name, cb)

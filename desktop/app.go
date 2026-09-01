@@ -2,6 +2,7 @@
 package main
 
 import (
+	"regexp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -281,21 +282,7 @@ func (a *App) ListProviders() []ProviderInfo {
 					if p.APIFormat == "" {
 						p.APIFormat = "chat_completions"
 					}
-					// 凭据池：数组或逗号分隔字符串都支持（与内核 parseAPIKeys 一致）
-					switch v := pv["api_keys"].(type) {
-					case []any:
-						for _, x := range v {
-							if s := str(x); s != "" {
-								p.APIKeys = append(p.APIKeys, s)
-							}
-						}
-					case string:
-						for _, s := range strings.Split(v, ",") {
-							if s = strings.TrimSpace(s); s != "" {
-								p.APIKeys = append(p.APIKeys, s)
-							}
-						}
-					}
+					p.APIKeys = providerAPIKeys(pv)
 				}
 			}
 			grouped[m.ProviderName+"|"+m.BaseURL] = p
@@ -307,7 +294,53 @@ func (a *App) ListProviders() []ProviderInfo {
 	for _, k := range order {
 		out = append(out, *grouped[k])
 	}
+	// 无模型的供应商也要出现：刚新建、还没加第一个模型时，按模型聚类是看不见它的，
+	// 侧栏选不中 → 手动输入模型 ID 的第一次添加会静默落空（第二次才"成功"）。
+	seen := map[string]bool{}
+	for _, p := range out {
+		seen[p.ID] = true
+	}
+	for _, pv := range rawProviders(raw) {
+		id := str(pv["id"])
+		if id == "" || seen[id] {
+			continue
+		}
+		p := &ProviderInfo{ID: id, Name: str(pv["name"]), BaseURL: str(pv["base_url"]), Enabled: true}
+		if p.Name == "" {
+			p.Name = id
+		}
+		p.APIKey = str(pv["api_key"])
+		p.APIFormat = str(pv["api_format"])
+		if p.APIFormat == "" {
+			p.APIFormat = "chat_completions"
+		}
+		p.APIKeys = providerAPIKeys(pv)
+		out = append(out, *p)
+	}
 	return out
+}
+
+// providerAPIKeys 从原始 provider 读凭据池：数组或逗号分隔字符串都支持（与内核 parseAPIKeys 一致）。
+func providerAPIKeys(pv map[string]any) []string {
+	switch v := pv["api_keys"].(type) {
+	case []any:
+		var keys []string
+		for _, x := range v {
+			if s := str(x); s != "" {
+				keys = append(keys, s)
+			}
+		}
+		return keys
+	case string:
+		var keys []string
+		for _, s := range strings.Split(v, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				keys = append(keys, s)
+			}
+		}
+		return keys
+	}
+	return nil
 }
 
 func rawProviders(data map[string]any) []map[string]any {
@@ -691,6 +724,19 @@ func (a *App) RenameSession(id, title string) bool {
 	ok := sessions.Rename(id, title)
 	if ok {
 		broadcastSessions(a) // 改名同步到手机端
+	}
+	return ok
+}
+
+// MoveSession 把会话迁移到另一个项目（工作区分组），修正归错分组的会话。
+func (a *App) MoveSession(id, workspace string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	ok := sessions.Move(id, workspace)
+	if ok {
+		broadcastSessions(a) // 分组变化同步到手机端与各面板
 	}
 	return ok
 }
@@ -1742,6 +1788,13 @@ func (a *App) SetDispatchConfig(cfg map[string]any) {
 // GetMCPServers 读 mcp.json 原始配置。
 func (a *App) GetMCPServers() map[string]any { return config.LoadMCPServers() }
 
+// SaveMCPServers 保存整个 mcp.json 配置并重连。
+func (a *App) SaveMCPServers(servers map[string]any) {
+	data := map[string]any{"servers": servers}
+	config.SaveMCPServers(data)
+	a.ReconnectMCP()
+}
+
 // SaveMCPServer 新增/更新一个 MCP 服务器配置并重连。
 func (a *App) SaveMCPServer(name string, cfg map[string]any) {
 	data := config.LoadMCPServers()
@@ -1861,7 +1914,7 @@ func (a *App) GetAvailableBrowsers() []map[string]any {
 }
 
 // ConnectBrowserMCP 连接浏览器 MCP。browserType 可选 "chrome-devtools" 或 "playwright"。
-func (a *App) ConnectBrowserMCP(browserType string) map[string]any {
+func (a *App) ConnectBrowserMCP(browserType string, headless bool) map[string]any {
 	mgr := mcp.GetManager()
 	if mgr.IsServerConnected(browserServerName) {
 		return map[string]any{"ok": true, "msg": "已连接"}
@@ -1901,16 +1954,20 @@ func (a *App) ConnectBrowserMCP(browserType string) map[string]any {
 		return map[string]any{"ok": false, "error": "未找到 " + binName + " 可执行文件（不在 PATH）"}
 	}
 
-	// 更新 mcp.json 配置
+	// 更新 mcp.json 配置（headless=true 时不弹浏览器窗口，截图经 MCP 回显）
 	data := config.LoadMCPServers()
 	servers, _ := data["servers"].(map[string]any)
 	if servers == nil {
 		servers = map[string]any{}
 	}
+	args := []any{}
+	if headless {
+		args = append(args, "--headless")
+	}
 	servers[browserServerName] = map[string]any{
 		"enabled": true,
 		"command": binPath,
-		"args":    []any{},
+		"args":    args,
 	}
 	data["servers"] = servers
 	config.SaveMCPServers(data)
@@ -1918,7 +1975,9 @@ func (a *App) ConnectBrowserMCP(browserType string) map[string]any {
 	// 重连 MCP
 	go func() {
 		mcp.ResetManager()
-		mgr.Connect(func(line string) {
+		// ⚠️ 必须 reset 后重新 GetManager()：上面捕获的 mgr 已被 ResetManager
+		// 置为孤儿实例，连它等于连了个没人查询的实例——握手成功也永远"未连接"。
+		mcp.GetManager().Connect(func(line string) {
 			runtime.EventsEmit(a.ctx, "mcp:log", map[string]any{"line": line})
 		})
 		runtime.EventsEmit(a.ctx, "mcp:reconnected", nil)
@@ -1975,22 +2034,91 @@ func (a *App) InstallBrowserMCP(browserType string) map[string]any {
 	return map[string]any{"ok": true, "msg": "已安装"}
 }
 
+// ---------------- 内置浏览器（工具名动态解析：chrome-devtools-mcp 与 @playwright/mcp 命名不同） ----------------
+var (
+	browserNavTools   = []string{"navigate_page", "browser_navigate", "navigate", "goto"}
+	browserShotTools  = []string{"take_screenshot", "browser_take_screenshot", "screenshot", "browser_screenshot"}
+	browserSnapTools  = []string{"take_snapshot", "browser_snapshot", "snapshot"}
+	browserClickTools = []string{"click", "browser_click"}
+	browserFillTools  = []string{"fill", "browser_type", "browser_fill"}
+)
+
+// browserCall 解析候选工具名并调用；found=false 表示该 server 没有匹配工具。
+func browserCall(mgr *mcp.Manager, candidates []string, args map[string]any) (string, []string, bool) {
+	name := mgr.FindTool(browserServerName, candidates...)
+	if name == "" {
+		return "错误：未找到匹配的工具（检查浏览器 MCP 类型与安装）", nil, false
+	}
+	text, media := mgr.Call(name, args)
+	return text, media, true
+}
+
+// mediaToDataURL 把落盘媒体文件读成 data URL（前端 <img> 直接可用）。
+func mediaToDataURL(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	mime := "image/png"
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		mime = "image/jpeg"
+	case ".webp":
+		mime = "image/webp"
+	case ".gif":
+		mime = "image/gif"
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw)
+}
+
+// browserShotData 调截图工具并转成 data URL；失败时返回原始文本供诊断。
+// 有的 MCP 版本把截图落盘后只在文本里给路径，此处一并兜底。
+func browserShotData(mgr *mcp.Manager) (string, string) {
+	// ⚠️ 必须传空对象而非 nil：playwright-mcp 的 zod 校验拒绝 null arguments
+	text, media, ok := browserCall(mgr, browserShotTools, map[string]any{})
+	if ok && len(media) > 0 {
+		if d := mediaToDataURL(media[0]); d != "" {
+			return d, ""
+		}
+	}
+	if p := imagePathInText(text); p != "" {
+		if d := mediaToDataURL(p); d != "" {
+			return d, ""
+		}
+	}
+	return "", strings.TrimSpace(text)
+}
+
+// imagePathInText 从工具文本输出中找实际存在的本机图片路径。
+func imagePathInText(text string) string {
+	re := regexp.MustCompile(`[A-Za-z]:\\[^"'<>|\s]+?\.(?i:png|jpe?g|webp)`)
+	p := re.FindString(text)
+	if p == "" {
+		return ""
+	}
+	if st, err := os.Stat(p); err != nil || st.IsDir() {
+		return ""
+	}
+	return p
+}
+
 // BrowserNavigate 导航到指定 URL。
 func (a *App) BrowserNavigate(url string) map[string]any {
 	mgr := mcp.GetManager()
 	if !mgr.IsServerConnected(browserServerName) {
 		return map[string]any{"error": "浏览器 MCP 未连接"}
 	}
-	// 尝试通用的 navigate 调用（工具名可能因 MCP 包而异）
-	result, _ := mgr.Call("mcp_browser_navigate", map[string]any{"url": url})
-	if result != "" && !strings.Contains(result, "错误") {
-		screenshot, _ := mgr.Call("mcp_browser_screenshot", nil)
-		return map[string]any{"ok": true, "result": result, "screenshot": screenshot}
+	result, media, ok := browserCall(mgr, browserNavTools, map[string]any{"url": url})
+	if !ok || strings.Contains(result, "错误") {
+		return map[string]any{"ok": true, "error": result}
 	}
-	// 备用：尝试 chrome-devtools 工具名
-	result, _ = mgr.Call("mcp_chrome_devtools_navigate", map[string]any{"url": url})
-	screenshot, _ := mgr.Call("mcp_chrome_devtools_screenshot", nil)
-	return map[string]any{"ok": true, "result": result, "screenshot": screenshot}
+	out := map[string]any{"ok": true, "result": result}
+	if len(media) > 0 {
+		out["screenshot"] = mediaToDataURL(media[0])
+	} else if shot, _ := browserShotData(mgr); shot != "" {
+		out["screenshot"] = shot
+	}
+	return out
 }
 
 // BrowserScreenshot 获取当前页面截图。
@@ -1999,11 +2127,18 @@ func (a *App) BrowserScreenshot() map[string]any {
 	if !mgr.IsServerConnected(browserServerName) {
 		return map[string]any{"error": "浏览器 MCP 未连接"}
 	}
-	result, _ := mgr.Call("mcp_browser_screenshot", nil)
-	if result == "" || strings.Contains(result, "错误") {
-		result, _ = mgr.Call("mcp_chrome_devtools_screenshot", nil)
+	shot, raw := browserShotData(mgr)
+	if shot != "" {
+		return map[string]any{"ok": true, "screenshot": shot}
 	}
-	return map[string]any{"ok": true, "screenshot": result}
+	msg := "截图失败：未获得图像数据"
+	if raw != "" {
+		if len(raw) > 300 {
+			raw = raw[:300] + "…"
+		}
+		msg += "（工具输出: " + raw + "）"
+	}
+	return map[string]any{"ok": true, "error": msg}
 }
 
 // BrowserSnapshot 获取当前页面内容。
@@ -2012,9 +2147,9 @@ func (a *App) BrowserSnapshot() map[string]any {
 	if !mgr.IsServerConnected(browserServerName) {
 		return map[string]any{"error": "浏览器 MCP 未连接"}
 	}
-	result, _ := mgr.Call("mcp_browser_snapshot", nil)
-	if result == "" || strings.Contains(result, "错误") {
-		result, _ = mgr.Call("mcp_chrome_devtools_snapshot", nil)
+	result, _, ok := browserCall(mgr, browserSnapTools, map[string]any{})
+	if !ok || strings.Contains(result, "错误") {
+		return map[string]any{"ok": true, "error": result}
 	}
 	return map[string]any{"ok": true, "content": result}
 }
@@ -2025,9 +2160,9 @@ func (a *App) BrowserClick(selector string) map[string]any {
 	if !mgr.IsServerConnected(browserServerName) {
 		return map[string]any{"error": "浏览器 MCP 未连接"}
 	}
-	result, _ := mgr.Call("mcp_browser_click", map[string]any{"selector": selector})
-	if result == "" || strings.Contains(result, "错误") {
-		result, _ = mgr.Call("mcp_chrome_devtools_click", map[string]any{"selector": selector})
+	result, _, ok := browserCall(mgr, browserClickTools, map[string]any{"selector": selector})
+	if !ok || strings.Contains(result, "错误") {
+		return map[string]any{"ok": true, "error": result}
 	}
 	return map[string]any{"ok": true, "result": result}
 }
@@ -2038,9 +2173,9 @@ func (a *App) BrowserFill(selector, value string) map[string]any {
 	if !mgr.IsServerConnected(browserServerName) {
 		return map[string]any{"error": "浏览器 MCP 未连接"}
 	}
-	result, _ := mgr.Call("mcp_browser_fill", map[string]any{"selector": selector, "value": value})
-	if result == "" || strings.Contains(result, "错误") {
-		result, _ = mgr.Call("mcp_chrome_devtools_fill", map[string]any{"selector": selector, "value": value})
+	result, _, ok := browserCall(mgr, browserFillTools, map[string]any{"selector": selector, "value": value})
+	if !ok || strings.Contains(result, "错误") {
+		return map[string]any{"ok": true, "error": result}
 	}
 	return map[string]any{"ok": true, "result": result}
 }

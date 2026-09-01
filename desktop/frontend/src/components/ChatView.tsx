@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { attLabel, isImgPath, cachedImageURL, useStore, t } from '../store'
@@ -16,6 +16,43 @@ function MsgThumb({ path }: { path: string }) {
       onClick={() => url && st.setPreviewSrc(url)}
       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
     />
+  )
+}
+
+// 从 AI 消息文本里提取图片引用：远程 URL 直接当 src；本地路径走 cachedImageURL（Go 绑定绕过 file:// 限制）
+const REMOTE_IMG_RE = /https?:\/\/[^\s"'<>（）()，。；]+?\.(?:png|jpe?g|webp|gif|bmp)(?:\?\S*)?/gi
+const LOCAL_IMG_RE = /[A-Za-z]:[\\/][^\s"'<>（）()，。；]+?\.(?:png|jpe?g|webp|gif|bmp)/gi
+
+function extractImgRefs(text: string): string[] {
+  if (!text) return []
+  const out: string[] = []
+  const push = (s: string) => { if (s && !out.includes(s)) out.push(s) }
+  for (const m of text.matchAll(REMOTE_IMG_RE)) push(m[0])
+  for (const m of text.matchAll(LOCAL_IMG_RE)) push(m[0])
+  return out
+}
+
+function AssistantImages({ text }: { text: string }) {
+  const refs = useMemo(() => extractImgRefs(text), [text])
+  if (!refs.length) return null
+  return (
+    <div className="msg-thumbs">
+      {refs.map((r) =>
+        /^https?:\/\//i.test(r) ? (
+          <img
+            key={r}
+            className="msg-thumb"
+            src={r}
+            alt=""
+            loading="lazy"
+            onClick={() => useStore.getState().setPreviewSrc(r)}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+          />
+        ) : (
+          <MsgThumb key={r} path={r} />
+        ),
+      )}
+    </div>
   )
 }
 
@@ -151,6 +188,7 @@ export default function ChatView() {
                     <ThinkingDots className="block" />
                   )}
                 </div>
+                <AssistantImages text={it.text} />
                 {it.text && <CopyBtn text={it.text} />}
               </div>
             )

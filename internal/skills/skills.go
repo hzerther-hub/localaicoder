@@ -456,7 +456,8 @@ func normalizeDesc(s string) string {
 const maxInject = 6
 
 // PromptSection 返回注入 system prompt 动态区的技能段；无可用技能返回空串。
-// userText 非空时按触发词命中排序（命中的在前），最多 maxInject 条。
+// userText 非空时按相关性排序（显式 when 命中 > 名称/描述自动推导命中，
+// 同分保持名称序），最多 maxInject 条——导入的技能不手填 when 也可用。
 func PromptSection(workspace, userText string) string {
 	if !config.GetSkillsEnabled() {
 		return ""
@@ -465,10 +466,10 @@ func PromptSection(workspace, userText string) string {
 	if len(all) == 0 {
 		return ""
 	}
-	// 触发词命中排序（稳定：命中在前，组内保持名称序）
+	// 相关性排序（稳定：同分保持名称序）
 	ut := strings.ToLower(userText)
 	sort.SliceStable(all, func(i, j int) bool {
-		return hitsSkill(all[i], ut) && !hitsSkill(all[j], ut)
+		return skillScore(all[i], ut) > skillScore(all[j], ut)
 	})
 	if len(all) > maxInject {
 		all = all[:maxInject]
@@ -485,13 +486,121 @@ func PromptSection(workspace, userText string) string {
 	return b.String()
 }
 
-// hitsSkill 用户文本是否命中技能触发词。
+// hitsSkill 用户文本是否命中技能显式触发词（when）。
 func hitsSkill(sk Skill, lowerUserText string) bool {
-	for _, w := range strings.Split(sk.When, ",") {
-		w = strings.ToLower(strings.TrimSpace(w))
-		if w != "" && strings.Contains(lowerUserText, w) {
+	for _, w := range splitTriggers(sk.When) {
+		if strings.Contains(lowerUserText, w) {
 			return true
 		}
 	}
 	return false
+}
+
+// splitTriggers 拆逗号分隔触发词（小写、去空白、去空项）。
+func splitTriggers(s string) []string {
+	var out []string
+	for _, w := range strings.Split(s, ",") {
+		if w = strings.ToLower(strings.TrimSpace(w)); w != "" {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// ---------------- 触发词自动推导（导入技能免手填 when） ----------------
+
+// 相关性权重：显式 when 命中 > 名称词命中 > 描述/正文推导词命中 > 0（0 分按名称序补位）。
+const (
+	scoreWhenHit  = 4
+	scoreNameHit  = 3
+	scoreWordHit  = 2
+	minWordLen    = 4  // 描述/正文推导词最小长度（3 字母词噪声大，如 log/web）
+	minNameLen    = 3  // 名称分词最小长度（mcp/pdf 等标识词保留）
+)
+
+// deriveStopWords 推导触发词时剔除的高频泛词（几乎所有描述/正文都含，无区分度）。
+var deriveStopWords = map[string]bool{
+	"the": true, "and": true, "for": true, "with": true, "this": true, "that": true,
+	"when": true, "whenever": true, "while": true, "user": true, "want": true,
+	"wants": true, "use": true, "used": true, "using": true, "any": true, "are": true,
+	"can": true, "will": true, "must": true, "should": true, "not": true, "new": true,
+	"from": true, "into": true, "out": true, "all": true, "has": true, "have": true,
+	"had": true, "its": true, "they": true, "them": true, "their": true, "you": true,
+	"your": true, "our": true, "one": true, "two": true, "than": true, "then": true,
+	"also": true, "more": true, "most": true, "such": true, "some": true, "what": true,
+	"which": true, "how": true, "why": true, "where": true, "who": true, "mean": true,
+	"file": true, "files": true, "skill": true, "skills": true,
+	"task": true, "tasks": true, "tool": true, "tools": true, "kit": true,
+	"set": true, "input": true, "output": true, "based": true, "kind": true,
+}
+
+// asciiWordRe 提取小写英文词（≥3 字母），用于推导与用户文本分词。
+var asciiWordRe = regexp.MustCompile(`[a-z]{3,}`)
+
+// deriveNameWords 技能名分词（连字符/下划线拆开，小写、排序）。
+// 名称是技能标识：mcp/pdf/pptx 这类 3~4 字母标识词也保留。
+func deriveNameWords(name string) []string {
+	var out []string
+	for _, p := range strings.FieldsFunc(name, func(r rune) bool { return r == '-' || r == '_' }) {
+		if len(p) >= minNameLen {
+			out = append(out, strings.ToLower(p))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// deriveWords 从描述与正文自动推导触发词（导入的技能不填 when 也能被匹配）：
+// 英文词剥尾部 s、滤停用词（剥前与剥后都查，防 this→thi 之类变形残留）。
+// 推导词只用于打分，不进 prompt；排序输出保证确定性。
+func deriveWords(sk Skill) []string {
+	seen := map[string]bool{}
+	for _, w := range asciiWordRe.FindAllString(strings.ToLower(sk.Description+" "+sk.Body), -1) {
+		if deriveStopWords[w] {
+			continue
+		}
+		if len(w) > 3 && strings.HasSuffix(w, "s") {
+			w = w[:len(w)-1]
+		}
+		if len(w) >= minWordLen && !deriveStopWords[w] {
+			seen[w] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for w := range seen {
+		out = append(out, w)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// skillScore 用户文本与技能的相关性分：显式 when 命中最强，名称词次之，
+// 描述/正文推导词再次；用户文本里的英文短词按前缀匹配名称词（如 ppt→pptx）。
+func skillScore(sk Skill, lowerUserText string) int {
+	score := 0
+	for _, w := range splitTriggers(sk.When) {
+		if strings.Contains(lowerUserText, w) {
+			score += scoreWhenHit
+		}
+	}
+	nameWords := deriveNameWords(sk.Name)
+	for _, w := range nameWords {
+		if strings.Contains(lowerUserText, w) {
+			score += scoreNameHit
+		}
+	}
+	for _, w := range deriveWords(sk) {
+		if strings.Contains(lowerUserText, w) {
+			score += scoreWordHit
+		}
+	}
+	for _, tok := range asciiWordRe.FindAllString(lowerUserText, -1) {
+		for _, w := range nameWords {
+			if len(tok) < len(w) && strings.HasPrefix(w, tok) {
+				score += scoreNameHit
+				break
+			}
+		}
+	}
+	return score
 }

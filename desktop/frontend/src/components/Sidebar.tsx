@@ -23,7 +23,7 @@ export default function Sidebar() {
   const sessions = useStore((s) => s.sessions)
   const workspace = useStore((s) => s.workspace)
   const sessionId = useStore((s) => s.sessionId)
-  const runningSessionId = useStore((s) => s.runningSessionId)
+  const runs = useStore((s) => s.runs)
   const trash = useStore((s) => s.trash)
   const newSession = useStore((s) => s.newSession)
   const loadSession = useStore((s) => s.loadSession)
@@ -53,6 +53,14 @@ export default function Sidebar() {
     if (title && title.trim()) {
       const ok = await api.renameSession(id, title.trim())
       if (!ok) alert(t('「新会话」为保留名，不能使用', '"新会话" is a reserved name'))
+      refresh()
+    }
+  }
+  const move = async (id: string, cur: string) => {
+    const ws = prompt(t('移动到项目（输入项目路径）', 'Move to project (enter project path)'), cur || workspace)
+    if (ws && ws.trim()) {
+      const ok = await api.moveSession(id, ws.trim())
+      if (!ok) alert(t('移动失败', 'Move failed'))
       refresh()
     }
   }
@@ -111,10 +119,13 @@ export default function Sidebar() {
                 title={`${s.title} · 右键改名`}
               >
                 {s.id === sessionId && <span className="dot" />}
-                {s.id === runningSessionId && <span className="run-mark" title={t('运行中', 'running')}><ThinkingDots className="sm" /></span>}
+                {/* 后台运行中的会话也要可见：不只标当前打开的这一个 */}
+                {runs.some((r) => r.sessionId === s.id) && <span className="run-mark" title={t('运行中', 'running')}><ThinkingDots className="sm" /></span>}
                 <span className="tt">{s.title}</span>
                 <span className="ops">
                   <span className="tm">{timeAgo(s.updated)}</span>
+                  <button className="op" title={t('移动到其他项目', 'Move to another project')}
+                    onClick={(e) => { e.stopPropagation(); move(s.id, s.workspace) }}>📂</button>
                   <button className="op" title={t('改名', 'Rename')}
                     onClick={(e) => { e.stopPropagation(); rename(s.id, s.title) }}>✎</button>
                   <button className="op del" title={t('删除', 'Delete')}

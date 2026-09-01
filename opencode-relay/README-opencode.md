@@ -11,6 +11,7 @@
 > 与 **`pc/`（桥，留在家里 PC 跑）**；技术实现剖析见 `ARTICLE.md`。
 >
 > 端口约定：**方案 A → 8999**（中继 + 桥），**方案 B → 9001**（opencode serve）。
+> **三平台（Windows/Linux/macOS）从零启动指南见 [QUICKSTART.md](QUICKSTART.md)。**
 
 ## 一、架构总览
 
@@ -72,6 +73,28 @@
 > 即：**VPS 上只有中继 + Nginx 两样**；家里 PC 上跑"桥 + opencode serve"，桥对 VPS
 > 纯出站连接，家里路由器不用开任何端口。
 
+### 环境要求
+
+| 项 | 要求 | 说明 |
+|---|---|---|
+| opencode CLI | **≥ 1.18.25** | 1.18.21 在 Windows 上 `opencode serve` 会**静默退出**（无输出、退出码 0，已实测踩坑）；`npm i -g opencode-ai` 升级即可修。 |
+| Python（桥 + 中继） | **≥ 3.9** | 3.8 没有 `asyncio.to_thread`（桥已带 `_to_thread` 兼容垫片不至于崩，但强烈建议 ≥3.9）。Windows 自带的 `python3` 常是 Microsoft Store 占位 stub，别用。 |
+| Python 依赖 | 见两个 requirements.txt | 中继：`service/requirements.txt`（fastapi/uvicorn/websockets）；桥：`pc/requirements.txt`（requests/websockets）。 |
+| 网络 | 桥纯出站 | 家里 PC 只需能出站访问 VPS（wss）与本机 9001。 |
+
+#### 用 miniconda 建运行专用 venv（推荐，Windows 示例）
+
+```bash
+D:/miniconda3/python.exe -m venv .ocdata/venv                       # 建 venv（3.14 实测可用）
+.ocdata/venv/Scripts/python.exe -m pip install -r opencode-relay/service/requirements.txt \
+                                                   -r opencode-relay/pc/requirements.txt
+```
+
+- Linux/macOS 把 `Scripts/python.exe` 换成 `bin/python`。
+- venv 放在 `.ocdata/`（整目录已 gitignore，token/日志/运行数据都在这）。
+- **`scripts/opencode-remote.sh` 检测到 `.ocdata/venv` 会自动优先使用**，无需 source activate；
+  删掉该目录即回退系统 Python。
+
 ### 配置
 
 1. `service/config.json`（已 gitignore，模板见同目录 `config.json.example`）：
@@ -107,7 +130,7 @@
 ### 启动
 
 ```bash
-scripts/opencode-remote.sh start      # 起 9001 + 8999 + 桥
+scripts/opencode-remote.sh start      # 起 9001 + 8999 + 桥（自动选用 .ocdata/venv 的 Python，若有）
 # 或分别：
 opencode serve --hostname 127.0.0.1 --port 9001          # 在项目目录下跑
 cd opencode-relay/service && python3 main.py -config config.json   # 8999
@@ -141,11 +164,32 @@ server {
 
 > ⚠️ 手机访问走了公网时，聊天内容对中继服务器可见——务必只信任自己的 VPS（同现有自建中继模型）。
 
+### 服务端更新（改了 `service/` 的页面后）
+
+手机页三件套（`page.html` / `css/style.css` / `js/main.js`）由 **VPS 上的中继**提供，
+本地改完必须传上去才生效。`main.py` 每个请求都从磁盘读静态文件，**只传静态文件无需重启服务**：
+
+```bash
+# ① 本机：上传（路径以 config.md「部署到 op.mei.biz」约定 /opt/opencode-relay 为例，不符先 ssh ls 确认）
+scp opencode-relay/service/page.html root@VPS_IP:/tmp/
+scp opencode-relay/service/css/style.css root@VPS_IP:/tmp/
+scp opencode-relay/service/js/main.js  root@VPS_IP:/tmp/
+
+# ② VPS：归位（css/js 在子目录）
+ssh root@VPS_IP 'cd /opt/opencode-relay && mv /tmp/page.html . && mv /tmp/style.css css/ && mv /tmp/main.js js/'
+
+# ③ 本机：验证线上已是新页面（有输出 = 已生效）
+curl -s "https://op.mei.biz/s/?d=<token>" | grep 'id="ver"'
+```
+
+改了 `service/main.py` 才需要重启中继服务（systemd 部署为 `systemctl restart opencode-relay`）。
+手机浏览器可能缓存旧 js/css：验证不到效果时下拉刷新或清一次站点缓存。
+
 ### 桥做的协议翻译（对应 `docs/relay/protocol.md` 与 `desktop/relay.go`）
 
 | 手机→桥 | opencode 对应 |
 |---|---|
-| `state` | `GET /session` + 计算 `workspace/mode/current/branch` |
+| `state` | `GET /session` + 计算 `workspace/mode/current/branch`，`version` 取自 `/global/health`（10 分钟缓存，手机页标题旁角标） |
 | `messages {id}` | `GET /session/:id/message`（text/image/tool 部分拼成 `{role,text,images}`） |
 | `models` | `GET /config/providers`（铺平成 `{key,model_id,display_name,is_current,vision,reasoning}`） |
 | `send {session,text,atts}` | 确认/建会话 → `POST /session/:id/prompt_async`（body 含 `parts[text]`，图→`{type:file,url}`，`model` 必须传对象 `{providerID,modelID}`） |

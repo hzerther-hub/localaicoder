@@ -311,6 +311,28 @@ func Delete(sessionID string) bool {
 }
 
 // Rename 改会话标题。只更新 title，不刷新 updated（不扰动最近列表排序）。
+// Move 迁移会话到另一个项目（工作区）：用于修正归错分组的会话。
+// workspace 为空视为未指定，不移动。移动后下次 Load 该会话会自动切到新工作区。
+func Move(sessionID, workspace string) bool {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return false
+	}
+	d, err := getDB()
+	if err != nil {
+		return false
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	res, err := d.Exec("UPDATE sessions SET workspace=? WHERE id=?", workspace, sessionID)
+	if err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func Rename(sessionID, title string) bool {
 	title = strings.TrimSpace(title)
 	if title == "" {

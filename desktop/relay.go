@@ -285,9 +285,10 @@ func (rc *relayClient) pump(a *App, ctx context.Context, conn *websocket.Conn, s
 				a.openSessionFromPhone(id)
 			}
 		case "workspace":
-			// 手机端切项目（同步方向=手机→PC）：切工作区并打开该项目最近的会话
+			// 手机端切项目（同步方向=手机→PC）：切工作区并打开该项目最近的会话；
+			// create=true 时目录不存在则先创建（手机端"新建目录"）
 			if dir := msg.S(in, "dir"); dir != "" {
-				a.switchWorkspaceFromPhone(dir)
+				a.switchWorkspaceFromPhone(dir, msg.B(in, "create"))
 			}
 		}
 	}
@@ -305,13 +306,19 @@ func (a *App) openSessionFromPhone(id string) {
 }
 
 // switchWorkspaceFromPhone 手机端切换项目：切工作区，并自动打开该项目最近的会话（如有）。
+// create=true 且目录不存在时先创建（手机端"新建目录"）。
 // SetWorkspace/LoadSession 内部会广播 sessions:changed / session:opened，手机端状态随之对齐。
-func (a *App) switchWorkspaceFromPhone(dir string) {
+func (a *App) switchWorkspaceFromPhone(dir string, create bool) {
 	if a == nil || dir == "" {
 		return
 	}
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return
+		if !create {
+			return
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return
+		}
 	}
 	a.SetWorkspace(dir)
 	for _, s := range sessions.ListSessions(1, dir, "") {

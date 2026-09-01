@@ -1,0 +1,5 @@
+# 桥（pc/opencode_bridge.py）的运行依赖：requests 同步调 opencode HTTP API，
+# websockets 出站连中继 /client。与 service/requirements.txt 一起装即可：
+#   pip install -r opencode-relay/service/requirements.txt -r opencode-relay/pc/requirements.txt
+requests>=2.31
+websockets>=12.0

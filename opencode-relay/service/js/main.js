@@ -270,7 +270,51 @@ function slashShow(q){
  box.innerHTML=list.map(c=>'<div class="si" data-k="'+esc(c[0])+'"><span class="k">'+esc(c[0])+'</span><span class="d">'+esc(c[1])+'</span></div>').join('');
  box.classList.add('open');
 }
-$('i').addEventListener('input',()=>{const v=$('i').value;if(v.startsWith('/'))slashShow(v.slice(1));else $('slash').classList.remove('open');});
+ $('i').addEventListener('input',()=>{const v=$('i').value;if(v.startsWith('/'))slashShow(v.slice(1));else $('slash').classList.remove('open');});
+
+/* ---------- @ 文件/目录引用（Cursor 式） ---------- */
+let atFiles=[],atOpen=false;
+function atShow(q){
+ const box=$('atPick');if(!box)return;
+ atOpen=true;
+ const term=(q||'').toLowerCase();
+ let items=atFiles;
+ if(term)items=atFiles.filter(f=>f.name.toLowerCase().includes(term)||f.path.toLowerCase().includes(term));
+ if(!items.length){box.innerHTML='<div class="at-empty">（无匹配文件）</div>';box.classList.add('open');return;}
+ box.innerHTML=items.slice(0,15).map(f=>'<div class="at-i" data-p="'+esc(f.path)+'" data-n="'+esc(f.name)+'"><span class="at-ic">'+(f.dir?'📁':'📄')+'</span><span class="at-nm">'+esc(f.name)+'</span><span class="at-p">'+esc(f.path)+'</span></div>').join('');
+ box.classList.add('open');
+}
+function atHide(){atOpen=false;const box=$('atPick');if(box)box.classList.remove('open');}
+async function atFetch(p){
+ try{ const m=await req({type:'fs_list',path:p||window.__ws||''});
+  if(m.error||!m.fs)return;
+  atFiles=[];
+  (m.dirs||[]).forEach(d=>atFiles.push({name:d.name,path:d.path,dir:true}));
+  (m.files||[]).forEach(f=>atFiles.push({name:f.name,path:f.path,dir:false}));
+ }catch(e){}
+}
+$('i').addEventListener('input',()=>{
+ const v=$('i').value;
+ // @ 触发：光标前最后一个 @ 后面的文本作为搜索词
+ const atIdx=v.lastIndexOf('@');
+ if(atIdx>=0&&(atIdx===0||v[atIdx-1]===' '||v[atIdx-1]==='\n')){
+  const q=v.slice(atIdx+1);
+  if(q.length<=60&&!q.includes(' ')){
+   if(!atFiles.length||!atOpen)atFetch(window.__ws);
+   atShow(q);return;
+  }
+ }
+ atHide();
+});
+$('atPick').onclick=e=>{const it=e.target.closest('.at-i');if(!it)return;
+ const p=it.dataset.p,n=it.dataset.n;atHide();
+ const i=$('i');const v=i.value;const atIdx=v.lastIndexOf('@');
+ if(atIdx>=0)i.value=v.slice(0,atIdx);
+ // 添加为文件引用
+ const rr={display:n,path:p};rr._uid=++attSeq;fsPendRefs.push(rr);fsAddRefChip(rr);
+ i.focus();};
+document.addEventListener('click',e=>{if(atOpen&&!e.target.closest('#atPick')&&!e.target.closest('#i'))atHide();});
+$('i').addEventListener('keydown',e=>{if(e.key==='Escape'&&atOpen){atHide();}});
 $('slash').addEventListener('click',e=>{const si=e.target.closest('.si');if(!si)return;const k=si.dataset.k;
  if(k==='/file'){const i=$('i');i.value='';try{$('fileAny').click()}catch(_){}
  }else{const i=$('i');i.value=k+' ';i.focus();}

@@ -165,6 +165,18 @@ form button:active{opacity:.85}
 #btnAtt:active{color:var(--text);border-color:var(--text-faint)}
 
 /* ---------- 斜杠菜单 ---------- */
+
+/* @ 文件/目录引用选择器 */
+#atPick{display:none;position:fixed;left:20px;right:20px;bottom:70px;max-width:520px;margin:0 auto;background:var(--bg-1);border:1px solid var(--border-2);border-radius:8px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.6);z-index:8;max-height:260px;overflow-y:auto}
+#atPick.open{display:block}
+#atPick .at-empty{padding:14px;text-align:center;color:var(--text-faint);font-size:12px}
+#atPick .at-i{display:flex;align-items:center;gap:10px;padding:9px 13px;cursor:pointer;border-bottom:1px solid var(--border)}
+#atPick .at-i:last-child{border-bottom:0}
+#atPick .at-i:active{background:var(--bg-2)}
+#atPick .at-ic{flex:none;font-size:14px}
+#atPick .at-nm{flex:none;font-size:13px;color:var(--text);font-weight:500;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#atPick .at-p{flex:1;font-size:11px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)}
+
 #slash{display:none;position:fixed;left:20px;right:20px;bottom:70px;max-width:520px;margin:0 auto;background:var(--bg-1);border:1px solid var(--border-2);border-radius:8px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.6);z-index:8}
 #slash.open{display:block}
 #slash .si{display:flex;align-items:center;gap:11px;padding:10px 13px;cursor:pointer;border-bottom:1px solid var(--border)}

@@ -753,85 +753,93 @@ class Bridge:
             await self._send({"type": "error", "delta": f"新建会话失败：{e}", "rid": rid})
 
     async def _fs_read(self, path, rid):
-        """读取文件内容：GET /file?path=...&directory=..."""
+        """读取文件内容：GET /file/content?path=...（返回 {"type":"text","content":"..."} JSON）"""
         path = (path or "").strip()
         if not path:
-            await self._send({"type": "error", "delta": "路径为空", "rid": rid})
+            await self._send({"type": "fs_read", "rid": rid, "path": path, "error": "路径为空"})
             return
-        directory = self.workspace or path.rsplit("/", 1)[0] if "/" in path else ""
         try:
-            content = await _to_thread(self.oc.get, f"/file?path={quote(path)}&directory={quote(directory or path)}")
-            await self._send({"type": "fs_read", "rid": rid, "path": path, "content": content or ""})
+            d = await _to_thread(self.oc.get, f"/file/content?path={quote(path)}")
+            content = ""
+            if isinstance(d, dict):
+                content = d.get("content") or ""
+            elif isinstance(d, str):
+                content = d
+            await self._send({"type": "fs_read", "rid": rid, "path": path,
+                              "content": content, "size": len(content)})
         except Exception as e:
-            await self._send({"type": "error", "delta": f"读取失败：{e}", "rid": rid})
+            await self._send({"type": "fs_read", "rid": rid, "path": path,
+                              "error": f"读取失败：{e}"})
 
     async def _fs_list(self, path, rid):
         """列出路径下的文件和目录：GET /file?path=...&directory=..."""
         path = (path or "").strip() or self.workspace or "/"
-        directory = self.workspace or path.rsplit("/", 1)[0] if "/" in path else ""
+        directory = path if os.path.isdir(path) else (self.workspace or "/")
         try:
-            nodes = await _to_thread(self.oc.get, f"/file?path={quote(path)}&directory={quote(directory or path)}")
-            dirs = [
-                {"name": n.get("name"), "path": n.get("absolute") or (path.rstrip("/") + "/" + n.get("name", ""))}
-                for n in (nodes or [])
-                if isinstance(n, dict) and n.get("type") == "directory" and n.get("name")
-            ]
-            files = [
-                {"name": n.get("name"), "path": n.get("absolute") or (path.rstrip("/") + "/" + n.get("name", "")), "size": n.get("size") or 0}
-                for n in (nodes or [])
-                if isinstance(n, dict) and n.get("type") == "file" and n.get("name")
-            ]
-            # 过滤隐藏文件/目录
-            dirs = [d for d in dirs if not d["name"].startswith(".")]
-            files = [f for f in files if not f["name"].startswith(".")]
+            nodes = await _to_thread(self.oc.get, f"/file?path={quote(path)}&directory={quote(directory)}")
+            dirs = []
+            files = []
+            for n in (nodes or []):
+                if not isinstance(n, dict) or not n.get("name") or n.get("name","").startswith("."):
+                    continue
+                absolute = n.get("absolute") or (path.rstrip("/\\") + "/" + n.get("name", ""))
+                if n.get("type") == "directory":
+                    dirs.append({"name": n["name"], "path": absolute})
+                elif n.get("type") == "file":
+                    files.append({"name": n["name"], "path": absolute, "size": n.get("size") or 0})
             dirs.sort(key=lambda d: d["name"].lower())
             files.sort(key=lambda f: f["name"].lower())
             await self._send({"type": "fs_list", "rid": rid, "path": path, "dirs": dirs, "files": files,
                               "safe": True, "fs": True})
         except Exception as e:
-            await self._send({"type": "error", "delta": f"列表失败：{e}", "rid": rid})
+            await self._send({"type": "fs_list", "rid": rid, "path": path, "dirs": [], "files": [],
+                              "error": f"列表失败：{e}", "safe": True, "fs": True})
 
     async def _fs_write(self, path, content, rid):
-        """写入文件内容：POST /file with body {path, content}"""
+        """写入文件内容：直接用 Python 写本地文件（opencode 无写文件 API）"""
         path = (path or "").strip()
         if not path:
-            await self._send({"type": "error", "delta": "路径为空", "rid": rid})
+            await self._send({"type": "fs_write", "rid": rid, "path": path, "error": "路径为空"})
             return
-        directory = self.workspace or path.rsplit("/", 1)[0] if "/" in path else ""
         try:
-            await _to_thread(self.oc.post, f"/file?path={quote(path)}&directory={quote(directory or path)}",
-                           {"content": content or ""})
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content or "")
+            log(f"文件已写入: {path} ({len(content or '')} 字)")
             await self._send({"type": "fs_write", "rid": rid, "path": path, "ok": True})
         except Exception as e:
-            await self._send({"type": "error", "delta": f"写入失败：{e}", "rid": rid})
+            await self._send({"type": "fs_write", "rid": rid, "path": path, "error": f"写入失败：{e}"})
 
     async def _fs_rename(self, old_path, new_name, rid):
-        """重命名文件：POST /file with body {path, new_name}"""
+        """重命名文件：Python os.rename"""
         old_path = (old_path or "").strip()
         new_name = (new_name or "").strip()
         if not old_path or not new_name:
-            await self._send({"type": "error", "delta": "路径或新名称为空", "rid": rid})
+            await self._send({"type": "fs_rename", "rid": rid, "error": "路径或新名称为空"})
             return
-        directory = self.workspace or old_path.rsplit("/", 1)[0] if "/" in old_path else ""
-        new_path = new_name if not old_path.endswith("/") else old_path + new_name
         try:
-            await _to_thread(self.oc.post, f"/file?path={quote(old_path)}&directory={quote(directory or old_path)}",
-                           {"new_path": new_path})
-            await self._send({"type": "fs_rename", "rid": rid, "old_path": old_path, "new_path": new_path, "ok": True})
+            parent = os.path.dirname(old_path)
+            new_path = os.path.join(parent, new_name)
+            os.rename(old_path, new_path)
+            await self._send({"type": "fs_rename", "rid": rid, "old_path": old_path,
+                              "new_path": new_path, "ok": True})
         except Exception as e:
-            await self._send({"type": "error", "delta": f"重命名失败：{e}", "rid": rid})
+            await self._send({"type": "fs_rename", "rid": rid, "error": f"重命名失败：{e}"})
 
     async def _fs_delete(self, path, rid):
-        """删除文件：DELETE /file?path=..."""
+        """删除文件：Python os.remove"""
         path = (path or "").strip()
         if not path:
-            await self._send({"type": "error", "delta": "路径为空", "rid": rid})
+            await self._send({"type": "fs_delete", "rid": rid, "error": "路径为空"})
             return
         try:
-            await _to_thread(self.oc.delete, f"/file?path={quote(path)}")
+            if os.path.isdir(path):
+                os.rmdir(path)
+            else:
+                os.remove(path)
             await self._send({"type": "fs_delete", "rid": rid, "path": path, "ok": True})
         except Exception as e:
-            await self._send({"type": "error", "delta": f"删除失败：{e}", "rid": rid})
+            await self._send({"type": "fs_delete", "rid": rid, "path": path, "error": f"删除失败：{e}"})
 
     def _model_obj(self):
         """'providerID/modelID' 字符串转 opencode 期望的 model 对象（同步版，仅带前缀时可用）。

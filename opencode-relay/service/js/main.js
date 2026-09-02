@@ -125,11 +125,9 @@ function connect(){
   else if(m.type==='fs'){fsSet(!!m.enabled,!!m.safe);}              // 电脑端切换文件开关
   else if(m.type==='hello'){
     fsSet(!!m.fs_enabled,!!m.fs_safe);     // PC (重)连时同步开关
-    // 桥重连成功 → 手机端数据可能在桥断线期间加载失败（空模型/空会话），重新拉取
-    loadState();loadModels();
-  }  // PC (重)连时同步开关+刷新数据
-  else if(m.type==='fs_list'){fsNav(m);}                            // 目录列表响应
-  else if(m.type==='fs_read'){fsOpenFile(m.path,m.size||0);}       // 文件读取响应
+    loadState();loadModels();              // 桥重连成功 → 刷新数据
+  }
+  // fs_read / fs_list 响应由 req()/pend 系统处理，不在 onmessage 分发（避免循环调用）
  };
  ws.onopen=()=>{setConn('live');loadState();loadModels();loadCommands();if(sid)openS(sid,false);};
  ws.onclose=(e)=>{let why='';const c=e&&e.code;if(c&&c!==1000)why=' (code '+c+')';setConn('dead');add('err','连接断开'+why+'，3 秒后重连…');setTimeout(()=>{log.innerHTML='';cur=null;connect();},3000);};

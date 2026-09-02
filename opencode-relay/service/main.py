@@ -242,6 +242,7 @@ async def phone_ws(ws: WebSocket, d: str = Query()) -> None:
     * 收到帧单转给当前桥；桥不在（断连窗口）时 send 抛异常 → break 断开手机。
       注意：中继不缓存帧——断连窗口内的帧永久丢失，由桥端"断线补偿"
       （opencode_bridge.py 的 _missed 机制）通知手机重拉消息来兜底。
+    * 心跳保活：每 25 秒发 ping 帧，防止 Nginx/服务器掐断空闲连接。
     """
     if not token_ok(d):
         await ws.close(code=1008)
@@ -255,6 +256,22 @@ async def phone_ws(ws: WebSocket, d: str = Query()) -> None:
         client = dev["client"]
         dev["phones"].add(ws)
     log.info("手机接入: %s…", d[:6])
+    
+    # 心跳保活：每 25 秒发 ping 帧，防止 Nginx/服务器掐断空闲连接
+    async def phone_heartbeat():
+        try:
+            while True:
+                await asyncio.sleep(25)
+                if ws.closed:
+                    break
+                try:
+                    await ws.send_text(json.dumps({"type": "ping"}))
+                except Exception:
+                    break
+        except asyncio.CancelledError:
+            pass
+    
+    hb_task = asyncio.create_task(phone_heartbeat())
     try:
         while True:
             raw = await ws.receive_text()
@@ -265,6 +282,7 @@ async def phone_ws(ws: WebSocket, d: str = Query()) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        hb_task.cancel()
         async with dev["lock"]:
             dev["phones"].discard(ws)
         log.info("手机断开: %s…", d[:6])

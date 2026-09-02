@@ -270,7 +270,7 @@ async function fsOpenFile(path,size){
  fsEdittable=!m.truncated&&(m.size||size||0)<=fsMaxEdit;
  $('fvName').textContent=m.name||path.split(/[\/]/).pop();
  $('fvMeta').textContent=(m.size?fsHuman(m.size):'')+(m.truncated?' · 已截断（>1MB 只读）':'')+(fsEdittable?'':' · 大文件只读');
- fsEditing=false; fsRenderView(); $('fsView').classList.add('on');
+ fsEditing=fsEdittable; fsRenderView(); $('fsView').classList.add('on');
 }
 const fsHlLangOf=name=>{const m=(name||'').split('.').pop().toLowerCase();
  const M={ps1:'powershell',psm1:'powershell',psd1:'powershell',js:'javascript',mjs:'javascript',jsx:'javascript',ts:'typescript',tsx:'typescript',py:'python',go:'go',rs:'rust',html:'xml',htm:'xml',vue:'xml',css:'css',scss:'scss',json:'json',md:'markdown',markdown:'markdown',yml:'yaml',yaml:'yaml',sh:'bash',bash:'bash',sql:'sql',java:'java',c:'c',h:'c',cpp:'cpp',cs:'csharp',rb:'ruby',php:'php',swift:'swift'};
@@ -290,7 +290,7 @@ function fsHlEdit(){ // 编辑态实时着色：透明 textarea 叠在高亮层�
 }
 function fsRenderView(){
  const pre=$('fvPre'),ta=$('fvTa'),wrap=$('fvEditWrap');
- $('fvEdit').style.display=(fsEdittable&&!fsEditing)?'':'none';
+ $('fvEdit').style.display='none';
  $('fvSave').style.display=fsEditing?'':'none';
  if(fsEditing){
   pre.style.display='none'; wrap.classList.add('on');

@@ -123,7 +123,11 @@ function connect(){
   else if(m.type==='question_done'){if(permQ&&permQ.id===m.id){permQ=null;$('qBar').style.display='none';}}
   else if(m.type==='question_request'){showQ(m);}
   else if(m.type==='fs'){fsSet(!!m.enabled,!!m.safe);}              // 电脑端切换文件开关
-  else if(m.type==='hello'){fsSet(!!m.fs_enabled,!!m.fs_safe);}     // PC (重)连时同步开关
+  else if(m.type==='hello'){
+    fsSet(!!m.fs_enabled,!!m.fs_safe);     // PC (重)连时同步开关
+    // 桥重连成功 → 手机端数据可能在桥断线期间加载失败（空模型/空会话），重新拉取
+    loadState();loadModels();
+  }  // PC (重)连时同步开关+刷新数据
   else if(m.type==='fs_list'){fsNav(m);}                            // 目录列表响应
   else if(m.type==='fs_read'){fsOpenFile(m.path,m.size||0);}       // 文件读取响应
  };
@@ -394,7 +398,7 @@ $('fsProj').onclick=async()=>{
  try{ await req({type:'workspace',dir:fsDir}); fsToast('已切换项目：'+fsDir); loadState(); }
  catch(e){ fsToast('切换失败：'+e.message); }
 };
-// 文件查看 / 编辑
+// 文件查看 / 编辑（直接进入编辑模式，带语法着色）
 async function fsOpenFile(path,size){
  let m; try{ m=await req({type:'fs_read',path}); }catch(e){ fsToast('读取超时'); return; }
  if(m.error){ fsToast(m.error); return; }
@@ -402,7 +406,8 @@ async function fsOpenFile(path,size){
  fsEdittable=!m.truncated&&(m.size||size||0)<=fsMaxEdit;
  $('fvName').textContent=m.name||path.split(/[\\/]/).pop();
  $('fvMeta').textContent=(m.size?fsHuman(m.size):'')+(m.truncated?' · 已截断（>1MB 只读）':'')+(fsEdittable?'':' · 大文件只读');
- fsEditing=false; fsRenderView(); $('fsView').classList.add('on');
+ // 直接进入编辑模式（语法着色 + 保存按钮），不经过预览
+ fsEditing=fsEdittable; fsRenderView(); $('fsView').classList.add('on');
 }
 const fsHlLangOf=name=>{const m=(name||'').split('.').pop().toLowerCase();
  const M={ps1:'powershell',psm1:'powershell',psd1:'powershell',js:'javascript',mjs:'javascript',jsx:'javascript',ts:'typescript',tsx:'typescript',py:'python',go:'go',rs:'rust',html:'xml',htm:'xml',vue:'xml',css:'css',scss:'scss',json:'json',md:'markdown',markdown:'markdown',yml:'yaml',yaml:'yaml',sh:'bash',bash:'bash',sql:'sql',java:'java',c:'c',h:'c',cpp:'cpp',cs:'csharp',rb:'ruby',php:'php',swift:'swift'};
@@ -422,7 +427,7 @@ function fsHlEdit(){ // 编辑态实时着色：透明 textarea 叠在高亮层�
 }
 function fsRenderView(){
  const pre=$('fvPre'),ta=$('fvTa'),wrap=$('fvEditWrap');
- $('fvEdit').style.display=(fsEdittable&&!fsEditing)?'':'none';
+ $('fvEdit').style.display='none'; // 直接编辑模式，不再需要编辑按钮
  $('fvSave').style.display=fsEditing?'':'none';
  if(fsEditing){
   pre.style.display='none'; wrap.classList.add('on');

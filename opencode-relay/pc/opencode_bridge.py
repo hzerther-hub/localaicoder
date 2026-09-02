@@ -563,6 +563,7 @@ class Bridge:
             log(f"已接入中继 {url}")
             await self._send({"type": "hello", "workspace": self.workspace,
                               "model": self.current_model, "mode": self.mode,
+                              "fs_enabled": True, "fs_safe": True,
                               "version": "opencode-bridge/1.0"})
             # 断线补偿：哑管道不缓存帧，通知手机端重拉错过帧的会话（openS 会重拉全量消息）
             if self._missed:
@@ -1114,6 +1115,7 @@ class Bridge:
             "type": "state", "rid": rid,
             "workspace": self.workspace, "mode": self.mode, "current": self.current_model,
             "current_session": self.current, "branch": self._git_branch(), "compact": {},
+            "fs": True, "fs_safe": True,
             "version": await self._opencode_version(),
             "sessions": oc_sessions_to_phone(sessions, self.running_map, {}),
         }

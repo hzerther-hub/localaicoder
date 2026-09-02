@@ -198,11 +198,17 @@ async function openS(id,notify){
  sid=id;closeSide();fsSyncAvail();
  log.innerHTML='';cur=null;renderSess();setSessName();badge();
  if(notify){try{ws.send(JSON.stringify({type:'open_session',id}))}catch(e){}}
- const m=await req({type:'messages',id});
- if(seq!==openSeq)return;
- if(cur)return; // 流式已在渲染（历史拉取期间回复开始），跳过历史重绘防止清屏
- if(m.messages&&m.messages.length)m.messages.forEach(renderMsg);
- else log.innerHTML='<div class="empty">（空会话，直接发第一条消息）</div>';
+ try{
+  const m=await req({type:'messages',id});
+  if(seq!==openSeq)return;
+  if(cur)return;
+  if(m.messages&&m.messages.length)m.messages.forEach(renderMsg);
+  else log.innerHTML='<div class="empty">（空会话，直接发第一条消息）</div>';
+ }catch(e){
+  if(seq!==openSeq)return;
+  add('err','加载历史失败：'+e.message+'，点击重试');
+  log.onclick=()=>{log.onclick=null;openS(id,notify);};
+ }
 }
 function syncProj(w){w=w||'';if(!w||w===wsCur)return;wsCur=w;const sel=$('proj');for(const o of sel.options){if(o.value===w){sel.value=w;break;}}renderSess();}
 $('sessNew').onclick=async()=>{try{const m=await req({type:'new_session',dir:wsCur||window.__ws});if(m&&m.error)add('err',m.error);}catch(e){add('err','新建失败');}loadState();};

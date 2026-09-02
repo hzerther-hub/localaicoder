@@ -1140,10 +1140,13 @@ class Bridge:
         """
         if not sid:
             return {"type": "messages", "rid": rid, "id": sid, "messages": []}
+        log(f"messages 请求: sid={sid}")
         try:
             data = await _to_thread(self.oc.get, scoped(f"/session/{sid}/message", self._dir_by_sid.get(sid)))
-        except Exception:
-            return {"type": "messages", "rid": rid, "id": sid, "messages": []}
+            log(f"messages 响应: {len(data or [])} 条")
+        except Exception as e:
+            log(f"messages 失败: {e}")
+            return {"type": "messages", "rid": rid, "id": sid, "messages": [], "error": str(e)}
         msgs = []
         for item in data:
             info = item.get("info") or {}

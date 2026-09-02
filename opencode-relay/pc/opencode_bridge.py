@@ -546,7 +546,9 @@ class Bridge:
         while True:
             try:
                 extra = {}
-                if self.insecure:
+                if self.insecure and url.startswith("wss://"):
+                    # 仅 TLS 连接才传 ssl 参数：websockets 对 ws:// URI 带 ssl= 会直接拒绝
+                    # （"ssl argument is incompatible with a ws:// URI"）
                     import ssl
                     extra["ssl"] = ssl.create_default_context()
                     extra["ssl"].check_hostname = False

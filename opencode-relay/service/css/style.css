@@ -115,15 +115,17 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
 #lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:99;align-items:center;justify-content:center;cursor:zoom-out}
 #lightbox.on{display:flex}
 #lightbox img{max-width:94vw;max-height:92vh;object-fit:contain;border-radius:4px}
-.tool{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-1);margin:6px 0 14px;overflow:hidden}
-.tool .t-head{font-family:var(--mono);font-size:11.5px;color:var(--text-dim);padding:7px 10px;cursor:pointer;display:flex;gap:7px;align-items:center;white-space:nowrap;overflow:hidden}
+.tool{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-1);margin:2px 0;overflow:hidden;opacity:.82}
+.tool .t-head{font-family:var(--mono);font-size:11px;color:var(--text-dim);padding:2px 8px;cursor:pointer;display:flex;gap:6px;align-items:center;white-space:nowrap;overflow:hidden}
 .tool .t-head .st{flex:none}
-.tool .t-head .st.run{color:var(--blue-soft)}
+.tool .t-head .st.run{color:var(--blue-soft);animation:toolPulse 1s ease-in-out infinite}
 .tool .t-head .st.ok{color:var(--ok)}
 .tool .t-head .st.err{color:var(--danger)}
 .tool .t-head .nm{color:var(--text)}
 .tool .t-head .ar{color:var(--text-faint);overflow:hidden;text-overflow:ellipsis}
+@keyframes toolPulse{50%{opacity:.35}}
 .tool .t-body{display:none;font-family:var(--mono);font-size:11px;line-height:1.6;color:var(--text-dim);padding:8px 10px;border-top:1px solid var(--border);white-space:pre-wrap;word-break:break-all;max-height:260px;overflow-y:auto}
+.tool.open{opacity:1}
 .tool.open .t-body{display:block}
 .notice{font-family:var(--mono);font-size:11px;color:var(--text-faint);padding:1px 0;margin-bottom:8px}
 .err{font-size:13px;color:var(--danger);background:rgba(252,83,58,.08);border:1px solid rgba(252,83,58,.3);padding:8px 12px;border-radius:var(--radius);margin-bottom:14px;white-space:pre-wrap;word-break:break-word}

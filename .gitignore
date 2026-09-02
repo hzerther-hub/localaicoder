@@ -56,3 +56,7 @@ AGENTS.md.local.bak
 
 # playwright-mcp 探针/工具运行产物
 .playwright-mcp/
+.mimosa/
+.video_agent/
+.v2c/
+opencode-relay/pc/run/

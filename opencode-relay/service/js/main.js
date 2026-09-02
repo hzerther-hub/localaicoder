@@ -48,7 +48,11 @@ function addMsgImgs(container,imgs){if(!imgs||!imgs.forEach||!imgs.length)return
 function openLightbox(u){const lb=$('lightbox');if(!lb)return;lb.querySelector('img').src=u;lb.classList.add('on');}
 $('lightbox').onclick=()=>$('lightbox').classList.remove('on');
 function renderMsg(x){
-  const txt=add(x.role==='user'?'user':'ai',x.text||'');
+  // 历史里桥把工具输出折成「> 🔧 工具名: …」引用行——基本无用，整行滤掉；滤完整条为空就不渲染
+  const raw=String(x.text||'');
+  const t=raw.split('\n').filter(l=>!l.startsWith('> 🔧')).join('\n').replace(/\n{3,}/g,'\n\n');
+  if(!t.trim()&&!(x.images&&x.images.length))return null;
+  const txt=add(x.role==='user'?'user':'ai',t);
   addMsgImgs(txt,x.images);
   return txt;
 }
@@ -57,7 +61,14 @@ let lastTool=null,lastToolKey='';
 function toolCard(name,args,result){
   const key=name+'|'+JSON.stringify(args||{});
   let card=null;
-  if(!result&&lastTool&&lastToolKey===key){card=lastTool;}
+  // start 与 result 都要复用同一张卡（start 建卡、result 原地更新为 ✓）；
+  // key 不一致（如 result 帧参数更全）时退而找页面上最后一张同名未完成卡，避免一工具两行
+  if(lastTool&&lastToolKey===key){card=lastTool;}
+  if(!card&&result!=null){
+    const pend=[...log.querySelectorAll('.tool .st.run')].pop();
+    const cardEl=pend&&pend.closest('.tool');
+    if(cardEl&&cardEl.querySelector('.nm').textContent===name)card=cardEl;
+  }
   if(!card){
     card=document.createElement('div');card.className='tool';
     const head=document.createElement('div');head.className='t-head';
@@ -105,13 +116,13 @@ function connect(){
   else if(m.type==='run:finished'){runs.delete(m.sessionId);mark(m.sessionId,false);badge();cur=null;if(m.sessionId===sid){steps=[];renderSteps();}}
   else if(m.type==='round'){round=+m.n;renderSteps();}
   else if(m.type==='tool_start'){
-    toolCard(m.name,m.args,null);
+    // 工具调用不进聊天流（会把回复糊掉）：进度只在顶部「任务 N/M」步骤栏展示
     if(!runs.has(sid)){renderSteps();return;}
     if(m.name==='todo_write'){const ts=(m.args&&m.args.todos)||[];steps=ts.slice(0,20).map((t,i)=>({name:'todo',title:String((t&&t.title)||('步骤 '+(i+1))).slice(0,80),status:(t&&t.status)==='completed'?'done':(t&&t.status)==='in_progress'?'run':'wait'}));planned=true;}
     else if(!planned){const d=m.args||{};const hint=String(d.description||d.command||d.cmd||d.path||d.file||d.pattern||'').slice(0,48);steps.push({name:m.name,title:m.name+(hint?' · '+hint:''),status:'run'});}
     renderSteps();
   }
-  else if(m.type==='tool_result'){toolCard(m.name,m.args,m.result!=null?m.result:'');if(!runs.has(sid)){renderSteps();return;}if(m.name!=='todo_write'&&!planned){for(let i=steps.length-1;i>=0;i--){if(steps[i].name===m.name&&steps[i].status==='run'){steps[i].status='done';break;}}}renderSteps();}
+  else if(m.type==='tool_result'){if(!runs.has(sid)){renderSteps();return;}if(m.name!=='todo_write'&&!planned){for(let i=steps.length-1;i>=0;i--){if(steps[i].name===m.name&&steps[i].status==='run'){steps[i].status='done';break;}}}renderSteps();}
   else if(m.type==='tool_denied'){if(!runs.has(sid)){renderSteps();return;}for(let i=steps.length-1;i>=0;i--){if(steps[i].name===m.name&&steps[i].status==='run'){steps[i].status='deny';break;}}renderSteps();}
   else if(m.type==='todo'){if(m.sessionId===sid){steps=(m.todos||[]).slice(0,20).map(t=>({name:'todo',title:String(t.content||'').slice(0,80),status:t.status==='completed'?'done':t.status==='in_progress'?'run':t.status==='cancelled'?'deny':'wait'}));planned=true;round=round||1;renderSteps();}}
   else if(m.type==='model:changed'){loadModels();}
@@ -140,18 +151,21 @@ function req(o){return new Promise((res,rej)=>{
 function wsSend(o){if(!ws||ws.readyState!==1){add('err','连接未就绪，请等 1-2 秒（重连中）再发');return false;}ws.send(JSON.stringify(o));return true;}
 
 /* ---------- 状态与会话 ---------- */
+// Windows 桥的 state.workspace 可能是正斜杠（D:/x）而 sessions[].workspace 是原生反斜杠（D:\x），
+// 两边直接字符串比较会分成两个组 → 列表全空、下拉 (0)。所有 workspace 比较/分组前统一成正斜杠。
+const normWs=w=>String(w||'').replace(/\\/g,'/');
 function applyState(s){
  fsSet(!!s.fs,!!s.fs_safe);
  ALL=s.sessions||[];
- const map={};ALL.forEach(x=>{const k=x.workspace||'';(map[k]=map[k]||{n:0,u:0}).n++;map[k].u=Math.max(map[k].u,x.updated)});
- const w0=s.workspace||'';if(w0&&!map[w0])map[w0]={n:0,u:0};
+ const map={};ALL.forEach(x=>{const k=normWs(x.workspace);(map[k]=map[k]||{n:0,u:0}).n++;map[k].u=Math.max(map[k].u,x.updated)});
+ const w0=normWs(s.workspace);if(w0&&!map[w0])map[w0]={n:0,u:0};
  const sel=$('proj');
- if(s.workspace&&window.__ws&&s.workspace!==window.__ws)projPin=false;
- const keep=(projPin&&wsCur)?wsCur:(s.workspace||wsCur);
+ if(w0&&window.__ws&&w0!==window.__ws)projPin=false;
+ const keep=(projPin&&wsCur)?wsCur:(w0||wsCur);
  const opts=Object.keys(map).sort((a,b)=>map[b].u-map[a].u).map(w=>'<option value="'+esc(w)+'">'+esc(w.split('/').filter(Boolean).pop()||w)+' ('+map[w].n+')</option>').join('');
  if(opts!==window.__projOpts){window.__projOpts=opts;sel.innerHTML=opts;}
  wsCur=map[keep]?keep:(sel.options[0]?sel.options[0].value:'');sel.value=wsCur;
- window.__ws=s.workspace||'';window.__branch=s.branch||'';
+ window.__ws=w0;window.__branch=s.branch||'';
  runs=new Set(ALL.filter(x=>x.running).map(x=>x.id));
  renderSteps();
  try{$('modeSel').value=s.mode||'always'}catch(e){}
@@ -159,7 +173,7 @@ function applyState(s){
  const _cur=s.current||'';if(_cur&&_cur!==lastCurrent){lastCurrent=_cur;loadModels();}
  const _cs=s.current_session||'';if(_cs&&_cs!==sid&&!cur){openS(_cs,false);}
  // 流式渲染中（cur 存在）不自动跳转/清屏，防止把刚发出的回显和回复洗掉
- if(!sid&&!cur){const cand=ALL.filter(x=>(x.workspace||'')===wsCur).sort((a,b)=>b.updated-a.updated)[0];if(cand)openS(cand.id,false);}
+ if(!sid&&!cur){const cand=ALL.filter(x=>normWs(x.workspace)===wsCur).sort((a,b)=>b.updated-a.updated)[0];if(cand)openS(cand.id,false);}
  setSessName();renderSess();badge();
  fsSyncAvail();
 }
@@ -170,7 +184,7 @@ function renderSteps(){const el=$('steps');if(!el)return;if(!steps.length||!runs
  el.innerHTML='<div class="stepsbar-head">任务 '+done+'/'+steps.length+' · 运行中'+(round>0?(' · 第 '+round+' 轮'):'')+'</div>'+steps.map(x=>'<div class="step '+x.status+'">'+(x.status==='done'?'✓':x.status==='run'?'●':x.status==='deny'?'✗':'○')+' '+esc(x.title)+'</div>').join('');
  el.scrollTop=el.scrollHeight;}
 function renderSess(){
- const rows=ALL.filter(x=>(x.workspace||'')===wsCur).sort((a,b)=>b.updated-a.updated);
+ const rows=ALL.filter(x=>normWs(x.workspace)===wsCur).sort((a,b)=>b.updated-a.updated);
  let h='';
  rows.forEach(x=>{h+='<div class="s'+(x.id===sid?' on':'')+'" data-id="'+x.id+'">'
   +(x.running?'<span class="run">▶</span>':'')+'<span class="t">'+esc(x.title||'（无标题）')+'</span>'
@@ -180,7 +194,7 @@ function renderSess(){
 }
 function badge(){const c=$('conn');if(c)c.classList.toggle('working',runs.size>0);document.body.classList.toggle('working',runs.size>0);$('run').textContent=runs.size?'▶ '+runs.size:'';$('btnStop').classList.toggle('on',runs.has(sid));renderRuns();}
 function mark(id,on){ALL.forEach(x=>{if(x.id===id)x.running=on});renderSess();}
-function setSessName(){const el=$('sessName');if(!el)return;const i=ALL.findIndex(x=>x.id===sid);const t=i>=0?ALL[i].title:'';const w=i>=0?((ALL[i].workspace||'').split('/').filter(Boolean).pop()||''):'';
+function setSessName(){const el=$('sessName');if(!el)return;const i=ALL.findIndex(x=>x.id===sid);const t=i>=0?ALL[i].title:'';const w=i>=0?normWs(ALL[i].workspace).split('/').filter(Boolean).pop():'';
  el.textContent=t?('会话：'+t+(w?'  ·  '+w:'')+(window.__branch?('  ⎇ '+window.__branch):'')):'';}
 
 /* ---------- 运行中横幅 ---------- */
@@ -194,7 +208,7 @@ $('runsBar').onclick=e=>{const c=e.target.closest('.rr');if(!c)return;projPin=fa
 /* ---------- 会话打开 / 新建 ---------- */
 async function openS(id,notify){
  const seq=++openSeq;
- if(!notify){const sx=ALL.find(x=>x.id===id);syncProj(window.__ws||(sx&&sx.workspace)||'');}
+ if(!notify){const sx=ALL.find(x=>x.id===id);syncProj(normWs(window.__ws||(sx&&sx.workspace)||''));}
  sid=id;closeSide();fsSyncAvail();
  log.innerHTML='';cur=null;renderSess();setSessName();badge();
  if(notify){try{ws.send(JSON.stringify({type:'open_session',id}))}catch(e){}}
@@ -366,6 +380,9 @@ function fsSet(on,safe){ fsOn=on; if(safe!=null)fsSafeMode=safe;
  const e=$('fsEntry'); if(e)e.style.display=on?'':'none';
  const t=$('fsPanelTitle'); if(t)t.textContent=on?('📁 文件'+(fsSafeMode?' 🔒 安全目录（仅当前项目）':' ⚠ 任意路径')):'📁 文件';
  if(!on){$('fsPanel').classList.remove('on');$('fsView').classList.remove('on');} }
+// 按桥上报的 fs 开关重同步文件入口可见性（openS/applyState 调用；fsSet 只在 hello/state 触发过一次，
+// 页面后续任何时序都不应再依赖它，故单独提供这个幂等的再同步）
+function fsSyncAvail(){ const e=$('fsEntry'); if(e)e.style.display=fsOn?'':'none'; }
 function fsHuman(n){ if(n>=1048576)return (n/1048576).toFixed(1)+'M'; if(n>=1024)return (n/1024).toFixed(1)+'K'; return n+'B'; }
 // 按扩展名给文件类型着色（列表小圆点 + 文件名）
 const fsExtColor={js:'#e5c07b',mjs:'#e5c07b',ts:'#3178c6',tsx:'#3178c6',jsx:'#e5c07b',py:'#3572A5',go:'#00ADD8',rs:'#dea584',
@@ -562,8 +579,8 @@ function rnClose(){ $('rnMask').classList.remove('on'); }
 function rnSubmit(){
  const v=$('rnInput').value.trim();
  if(!v){ $('rnErr').textContent='名称不能为空'; return; }
- const sx=ALL.find(x=>x.id===rnId); const ws=(sx&&sx.workspace)||'';
- if(ALL.some(x=>x.id!==rnId&&(x.workspace||'')===ws&&(x.title||'').trim()===v)){
+ const sx=ALL.find(x=>x.id===rnId); const ws=normWs((sx&&sx.workspace)||'');
+ if(ALL.some(x=>x.id!==rnId&&normWs(x.workspace)===ws&&(x.title||'').trim()===v)){
   $('rnErr').textContent='该项目下已有同名会话'; return; }
  req({type:'rename_session',id:rnId,title:v}).then(()=>{ rnClose(); loadState(); })
   .catch(()=>{ $('rnErr').textContent='改名失败（连接不稳）'; });

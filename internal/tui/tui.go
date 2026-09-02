@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -29,6 +30,12 @@ var (
 	amberStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
 )
+
+// ompSpinner 等待动画：布莱叶点字 8 帧旋转、80ms/帧（oh-my-pi 同款 status spinner）
+var ompSpinner = spinner.Spinner{
+	Frames: []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"},
+	FPS:    80 * time.Millisecond,
+}
 
 // 事件通道消息
 type deltaMsg string
@@ -72,7 +79,7 @@ func Run() {
 	m.ta.Prompt = ""
 	m.ta.CharLimit = 0
 	m.ta.Focus()
-	m.spinner = spinner.New(spinner.WithSpinner(spinner.Meter))
+	m.spinner = spinner.New(spinner.WithSpinner(ompSpinner))
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	// agent 在 TUI 模型内部按需启动；这里预创建回调通道由 model.run() 建立

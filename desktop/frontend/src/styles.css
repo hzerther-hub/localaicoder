@@ -333,27 +333,13 @@ select option { background: var(--bg-panel); color: var(--text); }
 
 .meta-note { color: var(--text-faint); font-size: 12px; margin: 4px 0; }
 
-/* 统一「等待」指示：三点波浪脉冲（对齐参考图；全应用一致复用的 ThinkingDots）。
-   颜色随 currentColor 继承（chat 用文本色 / 进行中 chip 用绿色 / 智排按钮用紫色）。 */
-.tdots { display: inline-flex; gap: 4px; align-items: center; vertical-align: middle; }
-.tdots span {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: currentColor;
-  animation: tdotsWave 1.4s ease-in-out infinite both;
-}
-.tdots span:nth-child(1) { animation-delay: 0s; }
-.tdots span:nth-child(2) { animation-delay: 0.2s; }
-.tdots span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes tdotsWave {
-  0%, 60%, 100% { opacity: 0.2; transform: scale(0.7); }
-  30% { opacity: 1; transform: scale(1); }
-}
+/* 统一「等待」指示：布莱叶点字 8 帧旋转（oh-my-pi 同款 80ms/帧，动画在 ThinkingDots.tsx）。
+   等宽字体保证各帧宽度一致不跳动；颜色随 currentColor 继承（chat 用文本色 / 进行中 chip 用绿色 / 智排按钮用紫色）。 */
+.tdots { display: inline-flex; align-items: center; vertical-align: middle; font-family: var(--mono); line-height: 1; }
 /* 聊天区模型思考占位：块级、留点上下空隙 */
 .tdots.block { display: inline-flex; padding: 6px 0; }
-.tdots.block span { background: var(--text-faint); }
 /* 紧凑尺寸：用于菜单/按钮/状态栏等小空间 */
-.tdots.sm { gap: 3px; }
-.tdots.sm span { width: 4px; height: 4px; }
+.tdots.sm { font-size: 0.85em; }
 /* 忙/运行中状态点颜色（用量条 busy） */
 .tdots.busy { color: var(--amber); }
 

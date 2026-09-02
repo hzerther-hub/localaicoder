@@ -953,6 +953,29 @@ func (a *App) DeletePath(path string) (bool, string) {
 	return true, ""
 }
 
+// RenamePath 重命名工作目录内的文件/目录（newName 只取末段，仍在原目录内）。
+func (a *App) RenamePath(path, newName string) (bool, string) {
+	full := tools.ResolvePath(path)
+	if !tools.PathInWorkspace(full, "") {
+		return false, "拒绝：路径在工作目录之外（沙箱限制）"
+	}
+	if full == tools.GetWorkspace() {
+		return false, "拒绝：不能重命名工作目录本身"
+	}
+	base := filepath.Base(filepath.Clean(newName))
+	if base == "." || base == string(filepath.Separator) || base == "/" {
+		return false, "新名称不合法"
+	}
+	newPath := filepath.Join(filepath.Dir(full), base)
+	if _, err := os.Stat(newPath); err == nil {
+		return false, "同名文件/目录已存在"
+	}
+	if err := os.Rename(full, newPath); err != nil {
+		return false, err.Error()
+	}
+	return true, newPath
+}
+
 // LspProbeLanguages 工作区语言探测（启动预热）。
 func (a *App) LspProbeLanguages() []string { return lsp.ProbeWorkspace(tools.GetWorkspace(), 5000) }
 

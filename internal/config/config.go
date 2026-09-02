@@ -772,21 +772,53 @@ func SetLarkConfig(appID, appSecret, allowlist string) {
 
 // ---------------- 自建中继（跨网手机远程；桌面出站连用户服务器） ----------------
 
-// GetRelayConfig 中继配置 {server_url, device_token}。
+// GetRelayConfig 中继配置 {server_url, device_token, fs_enabled, fs_safe}。
 func GetRelayConfig() map[string]any {
 	d := msg.M(LoadModelsData(), "relay")
 	return map[string]any{
 		"server_url":   msg.S(d, "server_url"),
 		"device_token": msg.S(d, "device_token"),
+		"fs_enabled":   msg.B(d, "fs_enabled"),
+		"fs_safe":      msg.B(d, "fs_safe"),
 	}
 }
 
-// SetRelayConfig 保存中继配置。
+// SetRelayConfig 保存中继配置（增量更新，保留 fs_enabled 等其他字段）。
 func SetRelayConfig(serverURL, deviceToken string) {
 	modelsMu.Lock()
 	defer modelsMu.Unlock()
 	data := loadModelsDataLocked()
-	data["relay"] = map[string]any{"server_url": serverURL, "device_token": deviceToken}
+	relay := msg.M(data, "relay")
+	if relay == nil {
+		relay = map[string]any{}
+	}
+	relay["server_url"] = serverURL
+	relay["device_token"] = deviceToken
+	data["relay"] = relay
+	saveModelsDataLocked(data)
+}
+
+// SetRelayFsEnabled 设置"WEB 端文件浏览/编辑"开关（存 relay.fs_enabled）。
+func SetRelayFsEnabled(on bool) {
+	setRelayBool("fs_enabled", on)
+}
+
+// SetRelayFsSafe 设置"安全目录模式"开关（开启后手机只能访问当前项目目录；存 relay.fs_safe）。
+func SetRelayFsSafe(on bool) {
+	setRelayBool("fs_safe", on)
+}
+
+// setRelayBool 增量更新 relay 配置里的一个布尔字段。
+func setRelayBool(key string, on bool) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	data := loadModelsDataLocked()
+	relay := msg.M(data, "relay")
+	if relay == nil {
+		relay = map[string]any{}
+	}
+	relay[key] = on
+	data["relay"] = relay
 	saveModelsDataLocked(data)
 }
 

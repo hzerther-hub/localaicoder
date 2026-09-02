@@ -19,7 +19,7 @@ export default function MobilePanel() {
   const [larkRunning, setLarkRunning] = useState(false)
   const [tg, setTg] = useState({ bot_token: '', allowlist: '' })
   const [tgRunning, setTgRunning] = useState(false)
-  const [relay, setRelay] = useState({ server_url: '', device_token: '', running: false, connected: false, phone_url: '', qr: '', error: '' })
+  const [relay, setRelay] = useState({ server_url: '', device_token: '', running: false, connected: false, phone_url: '', qr: '', error: '', fs_enabled: false, fs_safe: true })
   const [expanded, setExpanded] = useState('') // 展开配置的渠道：'' | 'wecom' | 'feishu'
   const started = useRef(false) // 面板打开期间只自动启动一次
 
@@ -40,7 +40,7 @@ export default function MobilePanel() {
     api.larkStatus().then((s) => setLarkRunning(!!s.running))
     api.getTelegramConfig().then((c) => { if (c) setTg({ bot_token: c.bot_token || '', allowlist: c.allowlist || '' }) })
     api.telegramStatus().then((s) => setTgRunning(!!s.running))
-    api.getRelayConfig().then((c) => { if (c) setRelay((p) => ({ ...p, server_url: c.server_url || '', device_token: c.device_token || '' })) })
+    api.getRelayConfig().then((c) => { if (c) setRelay((p) => ({ ...p, server_url: c.server_url || '', device_token: c.device_token || '', fs_enabled: !!c.fs_enabled, fs_safe: c.fs_safe !== false })) })
     api.relayStatus().then((s) => setRelay((p) => ({ ...p, running: !!s.running, connected: !!s.connected, phone_url: s.phone_url || '', qr: s.qr || '', error: s.error || '' })))
     const id = setInterval(() => {
       api.mobileStatus().then(setSt)
@@ -140,6 +140,47 @@ export default function MobilePanel() {
             {relay.running && !relay.connected && (
               <div className="cfg-hint" style={{ color: 'var(--amber)' }}>⚠ {relay.error || t('连接中…', 'Connecting…')}</div>
             )}
+            {/* WEB 端文件浏览/编辑开关：开启后手机控制台出现「📁 文件」面板（浏览/编辑/保存） */}
+            <label style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer', marginTop: 8, gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={relay.fs_enabled}
+                onChange={async (e) => {
+                  const on = e.target.checked
+                  setRelay({ ...relay, fs_enabled: on })
+                  await api.relaySetFsEnabled(on)
+                  notice(on ? t('已允许 WEB 端浏览/编辑文件', 'WEB file access enabled') : t('已关闭 WEB 端文件访问', 'WEB file access disabled'))
+                }}
+                style={{ marginTop: 2, width: 'auto', flex: 'none' }}
+              />
+              <span>
+                📂 {t('允许 WEB 端浏览 / 编辑文件', 'Allow WEB file browse / edit')}
+                <span className="cfg-hint" style={{ display: 'block', color: 'var(--red, #e5484d)' }}>
+                  ⚠ {t('关闭下方安全目录时，手机可读写电脑任意文件；token 泄露即全盘暴露。', 'With safe-mode off the phone can read/write ANY file; leaked token = full disk.')}
+                </span>
+              </span>
+            </label>
+            {/* 安全目录模式：把手机端文件访问限制在当前项目目录内（推荐常开） */}
+            <label className="cfg-row" style={{ alignItems: 'flex-start', cursor: 'pointer', marginTop: 8, gap: 8, opacity: relay.fs_enabled ? 1 : 0.45 }}>
+              <input
+                type="checkbox"
+                checked={relay.fs_safe}
+                disabled={!relay.fs_enabled}
+                onChange={async (e) => {
+                  const on = e.target.checked
+                  setRelay({ ...relay, fs_safe: on })
+                  await api.relaySetFsSafe(on)
+                  notice(on ? t('安全目录模式：手机仅可访问当前项目', 'Safe mode: workspace only') : t('已放开：手机可访问任意路径', 'Safe mode off: any path allowed'))
+                }}
+                style={{ marginTop: 2, width: 'auto', flex: 'none' }}
+              />
+              <span>
+                🔒 {t('安全目录模式（仅当前项目目录）', 'Safe mode (current workspace only)')}
+                <span className="cfg-hint" style={{ display: 'block' }}>
+                  {t('开启后手机只能浏览/编辑当前项目内的文件；要开发其他目录，先在手机上「设为项目」。', 'Phone can only browse/edit inside the current workspace; use "set as project" on the phone to switch.')}
+                </span>
+              </span>
+            </label>
           </div>
         </div>
         <div className="mobile-grid">

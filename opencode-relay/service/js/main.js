@@ -122,6 +122,8 @@ function connect(){
   else if(m.type==='diff'){add('ai',m.delta);}
   else if(m.type==='question_done'){if(permQ&&permQ.id===m.id){permQ=null;$('qBar').style.display='none';}}
   else if(m.type==='question_request'){showQ(m);}
+  else if(m.type==='fs'){fsSet(!!m.enabled,!!m.safe);}              // 电脑端切换文件开关
+  else if(m.type==='hello'){fsSet(!!m.fs_enabled,!!m.fs_safe);}     // PC (重)连时同步开关
  };
  ws.onopen=()=>{setConn('live');loadState();loadModels();loadCommands();if(sid)openS(sid,false);};
  ws.onclose=(e)=>{let why='';const c=e&&e.code;if(c&&c!==1000)why=' (code '+c+')';setConn('dead');add('err','连接断开'+why+'，3 秒后重连…');setTimeout(()=>{log.innerHTML='';cur=null;connect();},3000);};
@@ -135,6 +137,7 @@ function wsSend(o){if(!ws||ws.readyState!==1){add('err','连接未就绪，请�
 
 /* ---------- 状态与会话 ---------- */
 function applyState(s){
+ fsSet(!!s.fs,!!s.fs_safe);
  ALL=s.sessions||[];
  const map={};ALL.forEach(x=>{const k=x.workspace||'';(map[k]=map[k]||{n:0,u:0}).n++;map[k].u=Math.max(map[k].u,x.updated)});
  const w0=s.workspace||'';if(w0&&!map[w0])map[w0]={n:0,u:0};
@@ -201,7 +204,7 @@ $('sessNew').onclick=async()=>{try{const m=await req({type:'new_session',dir:wsC
 $('sessList').onclick=e=>{const act=e.target.closest('.s-act');
  if(act){const row=act.closest('.s');if(!row)return;const id=row.dataset.id;
   if(act.dataset.act==='del'){ if(confirm('删除该会话？')) req({type:'delete_session',id}).then(()=>loadState()); }
-  else if(act.dataset.act==='rename'){ const nm=prompt('新标题',''); if(nm&&nm.trim()) req({type:'rename_session',id,title:nm.trim()}).then(()=>loadState()); }
+  else if(act.dataset.act==='rename'){ const sx=ALL.find(x=>x.id===id); rnOpen(id,(sx&&sx.title)||''); }
   return; }
  const r=e.target.closest('.s');if(r)openS(r.dataset.id,true);};
 
@@ -273,14 +276,14 @@ $('i').addEventListener('keydown',e=>{if(e.key==='Escape')$('slash').classList.r
 $('f').onsubmit=ev=>{ev.preventDefault();
  const i=$('i');const t=i.value.trim();
  if(t.startsWith('/file')){ i.value='';cur=null;try{$('fileAny').click()}catch(_){}; $('slash').classList.remove('open'); return; }
- if(!t&&!pendingAtts.length)return;
+ if(!t&&!pendingAtts.length&&!fsPendRefs.length)return;
  const mc=t.match(/^\/([a-z0-9_:-]+)(\s+(.*))?$/i);
  if(mc){ i.value='';cur=null;
   wsSend({type:'command',session:sid,command:mc[1],arguments:(mc[3]||'').trim(),atts:pendingAtts});
-  pendingAtts=[];try{$('pendingAtts').innerHTML=''}catch(_){}; return; }
+  pendingAtts=[];try{$('pendingAtts').innerHTML=''}catch(_){}; fsPendRefs=[]; return; }
  i.value='';cur=null;
- wsSend({type:'send',session:sid,text:t,atts:pendingAtts});
- pendingAtts=[];try{$('pendingAtts').innerHTML=''}catch(_){};
+ wsSend({type:'send',session:sid,text:t,atts:pendingAtts,refs:(fsPendRefs.length?fsPendRefs:null)});
+ pendingAtts=[];try{$('pendingAtts').innerHTML=''}catch(_){}; fsPendRefs=[];
 };
 
 /* ---------- 附件（按钮 / 选择 / 粘贴 / 拖放） ---------- */
@@ -297,4 +300,203 @@ $('i').addEventListener('paste',e=>{const items=(e.clipboardData&&e.clipboardDat
 document.addEventListener('dragover',e=>e.preventDefault());
 document.addEventListener('drop',e=>{e.preventDefault();const fs=(e.dataTransfer&&e.dataTransfer.files)||[];[].slice.call(fs).forEach(addPasted);});
 
+/* ---------- WEB 文件浏览 / 编辑（电脑端开关 fs_enabled 门控） ---------- */
+let fsOn=false, fsSafeMode=true, fsDir='', fsViewPath='', fsViewRaw='', fsEditing=false, fsEdittable=false;
+const fsMaxEdit=200*1024; // >200KB 只读（手机浏览器性能）
+const $fs=id=>document.getElementById(id);
+function fsSet(on,safe){ fsOn=on; if(safe!=null)fsSafeMode=safe;
+ const e=$('fsEntry'); if(e)e.style.display=on?'':'none';
+ const t=$('fsPanelTitle'); if(t)t.textContent=on?('📁 文件'+(fsSafeMode?' 🔒 安全目录（仅当前项目）':' ⚠ 任意路径')):'📁 文件';
+ if(!on){$('fsPanel').classList.remove('on');$('fsView').classList.remove('on');} }
+function fsHuman(n){ if(n>=1048576)return (n/1048576).toFixed(1)+'M'; if(n>=1024)return (n/1024).toFixed(1)+'K'; return n+'B'; }
+// 按扩展名给文件类型着色（列表小圆点 + 文件名）
+const fsExtColor={js:'#e5c07b',mjs:'#e5c07b',ts:'#3178c6',tsx:'#3178c6',jsx:'#e5c07b',py:'#3572A5',go:'#00ADD8',rs:'#dea584',
+ html:'#e34c26',htm:'#e34c26',vue:'#41b883',css:'#563d7c',scss:'#c6538c',json:'#98c379',md:'#98c379',yml:'#cb171e',yaml:'#cb171e',
+ sh:'#89e051',bat:'#c1f12e',ps1:'#4f99e0',psm1:'#4f99e0',sql:'#e38c00',java:'#b07219',c:'#555555',h:'#555555',cpp:'#f34b7d',cs:'#178600',rb:'#701516',php:'#4F5D95',swift:'#F05138'};
+function fsColor(name){ const m=(name||'').split('.').pop().toLowerCase(); return fsExtColor[m]||'#8a93a5'; }
+function fsOpenPanel(){ $('fsPanel').classList.add('on'); if(!fsDir)fsNav(''); }
+$('btnFiles').onclick=fsOpenPanel;
+$('fsClose').onclick=()=>$('fsPanel').classList.remove('on');
+$('fsGo').onclick=()=>fsNav($('fsPath').value.trim());
+$('fsPath').addEventListener('keydown',e=>{ if(e.key==='Enter')fsNav($('fsPath').value.trim()); });
+// 面包屑：把路径按 / \ 切段，逐段可点击回跳
+function fsCrumb(p){
+ const el=$('fsCrumb'); if(!p){el.innerHTML='<span class="fs-c on">此电脑（磁盘列表）</span>';return;}
+ const segs=String(p).split(/[\\/]/).filter(Boolean);
+ let acc='',h='<span class="fs-c" data-p="">此电脑</span>';
+ if(/^[A-Za-z]:$/.test(segs[0]))acc=segs[0]+'\\';
+ segs.forEach((s,i)=>{ if(i===0&&/^[A-Za-z]:$/.test(s)){h+=' <span class="fs-c on">'+esc(s)+'\\</span>';return;}
+  acc=acc.endsWith('\\')||acc.endsWith('/')?acc+s:acc+'/'+s;
+  h+=' <span class="fs-c'+(i===segs.length-1?' on':'')+'" data-p="'+esc(acc)+'">'+esc(s)+'</span>'; });
+ el.innerHTML=h;
+}
+$('fsCrumb').onclick=e=>{const c=e.target.closest('.fs-c');if(c&&c.dataset.p!=null)fsNav(c.dataset.p);};
+async function fsNav(p){
+ p=(p||'').trim();
+ try{
+  const m=await req({type:'fs_list',path:p});
+  if(m.error){fsToast(m.error);return;}
+  fsDir=m.path||''; if(m.safe!=null)fsSafeMode=!!m.safe; $('fsPath').value=fsDir; fsCrumb(fsDir); renderFsList(m); fsSet(fsOn,fsSafeMode);
+ }catch(e){ fsToast('读取失败：'+e.message); }
+}
+function renderFsList(m){
+ const el=$('fsList'); let h='';
+ if(fsDir){ // 上级目录：磁盘列表页无上级
+  const parent=fsDir.replace(/[\\/]+$/,'').replace(/[\\/][^\\/]+$/,'')||''; // 逐级剥尾
+  h+='<div class="fs-row dir" data-p="'+esc(parent)+'"><span class="fs-ic">↩︎</span><span class="fs-nm">..</span></div>';
+ }
+ (m.dirs||[]).forEach(d=>{ h+='<div class="fs-row dir" data-p="'+esc(d.path)+'"><span class="fs-ic">📁</span><span class="fs-nm">'+esc(d.name)+'</span><span class="fs-more" data-more="1">⋯</span></div>'; });
+ (m.files||[]).forEach(f=>{ h+='<div class="fs-row file" data-p="'+esc(f.path)+'" data-sz="'+(f.size||0)+'"><span class="fs-ic" style="color:'+fsColor(f.name)+'">●</span><span class="fs-nm" style="color:'+fsColor(f.name)+'">'+esc(f.name)+'</span><span class="fs-sz">'+fsHuman(f.size||0)+'</span><span class="fs-more" data-more="1">⋯</span></div>'; });
+ el.innerHTML=h||'<div class="empty">（空目录）</div>';
+}
+let fsmSuppress=false;
+$('fsList').onclick=e=>{
+ if(fsmSuppress){ fsmSuppress=false; return; }
+ const more=e.target.closest('.fs-more');
+ if(more){ const r=more.closest('.fs-row'); fsmShow(r.dataset.p, r.classList.contains('dir')); return; }
+ const r=e.target.closest('.fs-row'); if(!r)return;
+ if(r.classList.contains('dir')){ fsNav(r.dataset.p); return; }
+ fsOpenFile(r.dataset.p, +r.dataset.sz||0);
+};
+// 长按 550ms 同样唤出操作菜单
+let fsLpTimer=null;
+$('fsList').addEventListener('touchstart',e=>{ const r=e.target.closest('.fs-row'); if(!r)return;
+ fsLpTimer=setTimeout(()=>{ fsmSuppress=true; fsmShow(r.dataset.p, r.classList.contains('dir')); },550); },{passive:true});
+['touchend','touchmove','touchcancel'].forEach(ev=>$('fsList').addEventListener(ev,()=>{ if(fsLpTimer){clearTimeout(fsLpTimer);fsLpTimer=null;} },{passive:true}));
+// ---- 文件操作菜单（编辑/改名/删除） ----
+let fsmPath='', fsmIsDir=false;
+function fsmShow(path,isDir){ fsmPath=path; fsmIsDir=isDir;
+ $('fsmName').textContent=path;
+ $('fsmEdit').style.display=isDir?'none':'';
+ $('fsMenu').classList.add('on'); }
+$('fsMenu').onclick=e=>{
+ if(e.target.id!=='fsMenu'&&e.target.tagName!=='BUTTON')return;
+ const act=e.target.dataset&&e.target.dataset.act;
+ if(!act&&e.target.id==='fsMenu')act='cancel';
+ $('fsMenu').classList.remove('on');
+ if(!act||act==='cancel')return;
+ const name=fsmPath.split(BS).pop().split('/').pop();
+ if(act==='chat'){ fsToChat('📎 '+fsmPath, {path:fsmPath}); return; }
+ if(act==='edit'){ fsOpenFile(fsmPath,0); return; }
+ if(act==='rename'){ const nn=prompt('新名称',name); if(!nn||nn===name)return;
+  req({type:'fs_rename',path:fsmPath,name:nn}).then(m=>{ fsToast(m.error?('改名失败：'+m.error):('已改名 ✓')); fsNav(fsDir); }).catch(()=>fsToast('改名失败')); return; }
+ if(act==='del'){ if(!confirm('确认删除 '+name+' ？'))return;
+  req({type:'fs_delete',path:fsmPath}).then(m=>{ fsToast(m.error?('删除失败：'+m.error):('已删除 ✓')); fsNav(fsDir); }).catch(()=>fsToast('删除失败')); return; }
+};
+$('fsProj').onclick=async()=>{
+ if(!fsDir){fsToast('先进入一个目录');return;}
+ try{ await req({type:'workspace',dir:fsDir}); fsToast('已切换项目：'+fsDir); loadState(); }
+ catch(e){ fsToast('切换失败：'+e.message); }
+};
+// 文件查看 / 编辑
+async function fsOpenFile(path,size){
+ let m; try{ m=await req({type:'fs_read',path}); }catch(e){ fsToast('读取超时'); return; }
+ if(m.error){ fsToast(m.error); return; }
+ fsViewPath=m.path||path; fsViewRaw=m.content||'';
+ fsEdittable=!m.truncated&&(m.size||size||0)<=fsMaxEdit;
+ $('fvName').textContent=m.name||path.split(/[\\/]/).pop();
+ $('fvMeta').textContent=(m.size?fsHuman(m.size):'')+(m.truncated?' · 已截断（>1MB 只读）':'')+(fsEdittable?'':' · 大文件只读');
+ fsEditing=false; fsRenderView(); $('fsView').classList.add('on');
+}
+const fsHlLangOf=name=>{const m=(name||'').split('.').pop().toLowerCase();
+ const M={ps1:'powershell',psm1:'powershell',psd1:'powershell',js:'javascript',mjs:'javascript',jsx:'javascript',ts:'typescript',tsx:'typescript',py:'python',go:'go',rs:'rust',html:'xml',htm:'xml',vue:'xml',css:'css',scss:'scss',json:'json',md:'markdown',markdown:'markdown',yml:'yaml',yaml:'yaml',sh:'bash',bash:'bash',sql:'sql',java:'java',c:'c',h:'c',cpp:'cpp',cs:'csharp',rb:'ruby',php:'php',swift:'swift'};
+ return M[m]||'';};
+let fsHlTimer=null;
+function fsHlEdit(){ // 编辑态实时着色：透明 textarea 叠在高亮层上
+ const ta=$('fvTa'),pre=$('fvHl'),code=pre.querySelector('code'),txt=ta.value;
+ try{
+  if(window.hljs){
+   let lang=fsHlLangOf(fsViewPath);
+   if(!lang||!hljs.getLanguage(lang)) lang=(hljs.highlightAuto(txt).language)||'';
+   if(lang&&hljs.getLanguage(lang)) code.innerHTML=hljs.highlight(txt,{language:lang,ignoreIllegals:true}).value;
+   else code.textContent=txt;
+  } else code.textContent=txt;
+ }catch(_){ code.textContent=txt; }
+ pre.scrollTop=ta.scrollTop; pre.scrollLeft=ta.scrollLeft;
+}
+function fsRenderView(){
+ const pre=$('fvPre'),ta=$('fvTa'),wrap=$('fvEditWrap');
+ $('fvEdit').style.display=(fsEdittable&&!fsEditing)?'':'none';
+ $('fvSave').style.display=fsEditing?'':'none';
+ if(fsEditing){
+  pre.style.display='none'; wrap.classList.add('on');
+  ta.value=fsViewRaw; fsHlEdit(); ta.focus();
+  return;
+ }
+ wrap.classList.remove('on'); pre.style.display='';
+ const code=pre.querySelector('code');
+ code.className='hljs'; code.textContent=fsViewRaw;
+ try{ if(window.hljs){ const r=hljs.highlightAuto(fsViewRaw); code.className='hljs language-'+r.language; code.innerHTML=r.value; } }
+ catch(_){ code.textContent=fsViewRaw; }
+}
+$('fvEdit').onclick=()=>{ fsEditing=true; fsRenderView(); };
+let fsHlDebounce=null;
+$('fvTa').addEventListener('input',()=>{ clearTimeout(fsHlDebounce); fsHlDebounce=setTimeout(fsHlEdit,80); });
+$('fvTa').addEventListener('scroll',()=>{ const pre=$('fvHl'); pre.scrollTop=$('fvTa').scrollTop; pre.scrollLeft=$('fvTa').scrollLeft; });
+$('fvTa').addEventListener('keydown',e=>{ if(e.key==='Tab'){ e.preventDefault(); const ta=e.target,s=ta.selectionStart,en=ta.selectionEnd; ta.value=ta.value.slice(0,s)+'  '+ta.value.slice(en); ta.selectionStart=ta.selectionEnd=s+2; fsHlEdit(); } });
+$('fvSave').onclick=async()=>{
+ try{
+  const m=await req({type:'fs_write',path:fsViewPath,content:$('fvTa').value});
+  if(m.error){ fsToast('保存失败：'+m.error); return; }
+  fsViewRaw=$('fvTa').value; fsEditing=false; fsRenderView(); fsToast('已保存 ✓');
+ }catch(e){ fsToast('保存失败：'+e.message); }
+};
+// ---- 加入对话框：文件引用 / 选中代码片段 → 聊天输入框 ----
+const NL=String.fromCharCode(10),TICK=String.fromCharCode(96,96,96),BS=String.fromCharCode(92);
+let fsPendRefs=[];
+// Cursor 式引用：输入框只放短引用，实际内容作为 refs 附件由电脑端在发送时注入给模型
+function fsToChat(display,ref){ const i=$('i');
+ // 引用只进附件标签（Cursor 式），源码与路径都不再塞进输入框
+ if(ref){ fsPendRefs.push(ref);
+  const box=$('pendingAtts'); if(box){ const c=document.createElement('div'); c.className='att-chip';
+   c.textContent='📄 '+display; box.appendChild(c); } }
+ $('fsMinName').textContent=display; fsMinimize(); i.focus(); fsToast('已加入对话框，回车发送'); }
+$('fvChat').onclick=()=>{ fsToChat('📎 '+fsViewPath, {path:fsViewPath}); };
+function fsUpdateSelBtn(){
+ const ta=$('fvTa'),btn=$('fvSelChat'); if(!ta||!btn)return;
+ if(!fsEditing||!$('fsView').classList.contains('on')){btn.style.display='none';return;}
+ const s=ta.selectionStart,e=ta.selectionEnd;
+ if(e>s){ const sl=ta.value.slice(0,s).split(NL).length; const el=sl+ta.value.slice(s,e).split(NL).length-1;
+  btn.textContent='💬 加入对话框（第 '+sl+'-'+el+' 行）'; btn.style.display=''; }
+ else btn.style.display='none';
+}
+['keyup','mouseup','touchend','input'].forEach(ev=>$('fvTa').addEventListener(ev,fsUpdateSelBtn));
+$('fvSelChat').onclick=()=>{
+ const ta=$('fvTa'),s=ta.selectionStart,e=ta.selectionEnd; if(e<=s)return;
+ const sl=ta.value.slice(0,s).split(NL).length; const el=sl+ta.value.slice(s,e).split(NL).length-1;
+ const name=fsViewPath.split(BS).pop().split('/').pop();
+ fsToChat('📎 '+name+':'+sl+'-'+el, {path:fsViewPath,start:sl,end:el});
+};
+$('fvDesktop').onclick=()=>{ try{ wsSend({type:'fs_open_desktop',path:fsViewPath}); fsToast('已在电脑端打开'); }catch(e){} };
+function fsMinimize(){ $('fsView').classList.remove('on'); $('fsMinBar').classList.add('on'); }
+function fsRestore(){ $('fsMinBar').classList.remove('on'); $('fsView').classList.add('on');
+ if(fsEditing){ fsUpdateSelBtn(); const ta=$('fvTa'); if(ta)ta.focus(); } }
+$('fsMinBar').onclick=fsRestore;
+$('fvMin').onclick=()=>{ $('fsMinName').textContent=$('fvName').textContent; fsMinimize(); };
+$('fvClose').onclick=()=>{ if(fsEditing&&!confirm('正在编辑中，关闭将丢弃未保存的修改？'))return;
+ fsEditing=false; $('fsMinBar').classList.remove('on'); $('fsView').classList.remove('on'); };
+// 轻量 toast（复用日志 err 样式，不打断）
+let fsToastTimer=null;
+function fsToast(t){ const el=$('fsHint'); el.textContent=t; el.style.color='#e5484d';
+ clearTimeout(fsToastTimer); fsToastTimer=setTimeout(()=>{el.textContent='';},4000); }
+
 connect();setInterval(loadState,8000);
+
+// ---- 重命名会话弹窗：预填当前标题，校验空名/同项目重名 ----
+let rnId='';
+function rnOpen(id,cur){ rnId=id; $('rnInput').value=cur; $('rnErr').textContent='';
+ $('rnMask').classList.add('on'); setTimeout(()=>{ $('rnInput').focus(); $('rnInput').select(); },60); }
+function rnClose(){ $('rnMask').classList.remove('on'); }
+function rnSubmit(){
+ const v=$('rnInput').value.trim();
+ if(!v){ $('rnErr').textContent='名称不能为空'; return; }
+ const sx=ALL.find(x=>x.id===rnId); const ws=(sx&&sx.workspace)||'';
+ if(ALL.some(x=>x.id!==rnId&&(x.workspace||'')===ws&&(x.title||'').trim()===v)){
+  $('rnErr').textContent='该项目下已有同名会话'; return; }
+ req({type:'rename_session',id:rnId,title:v}).then(()=>{ rnClose(); loadState(); })
+  .catch(()=>{ $('rnErr').textContent='改名失败（连接不稳）'; });
+}
+$('rnCancel').onclick=rnClose;
+$('rnMask').onclick=e=>{ if(e.target.id==='rnMask')rnClose(); };
+$('rnOk').onclick=rnSubmit;
+$('rnInput').addEventListener('keydown',e=>{ if(e.key==='Enter')rnSubmit(); if(e.key==='Escape')rnClose(); });

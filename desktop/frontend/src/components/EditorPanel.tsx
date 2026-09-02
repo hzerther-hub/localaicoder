@@ -22,6 +22,7 @@ import { StreamLanguage } from '@codemirror/language'
 import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { yaml } from '@codemirror/legacy-modes/mode/yaml'
 import { xml } from '@codemirror/legacy-modes/mode/xml'
+import { powerShell } from '@codemirror/legacy-modes/mode/powershell'
 import { sql } from '@codemirror/legacy-modes/mode/sql'
 import { api, DirEntry, DiagItem, onEvent } from '../bridge'
 import { useStore, t } from '../store'
@@ -84,6 +85,7 @@ function langOf(path: string) {
     case 'rs': return rust()
     case 'php': return php()
     case 'sh': case 'bash': case 'zsh': return StreamLanguage.define(shell as any)
+    case 'ps1': case 'psm1': case 'psd1': return StreamLanguage.define(powerShell as any)
     case 'yaml': case 'yml': return StreamLanguage.define(yaml as any)
     case 'xml': return StreamLanguage.define(xml as any)
     case 'sql': return StreamLanguage.define(sql as any)
@@ -517,7 +519,7 @@ export default function EditorPanel() {
             style={{ top: Math.max(60, (sel as any).y ?? 60) }}
             onClick={addSnippetToChat}
           >
-            💬 {t(`加到聊天（第 ${sel.startLine}-${sel.endLine} 行）`, `Add to chat (L${sel.startLine}-${sel.endLine})`)}
+            📎 {t(`加入对话框（第 ${sel.startLine}-${sel.endLine} 行）`, `Add to chat (L${sel.startLine}-${sel.endLine})`)}
           </button>
         )}
         <div className="editor-status">
@@ -585,6 +587,16 @@ ${r.output}`)
                 📝 {t('编辑', 'Edit')}
               </button>
             )}
+            <button onClick={async () => {
+              const m = ctxMenu
+              setCtxMenu(null)
+              const cur = m.path.split(/[\\/]/).pop() || ''
+              const nn = prompt(t('新名称', 'New name'), cur)
+              if (!nn || nn === cur) return
+              const r = await api.renamePath(m.path, nn)
+              if (!r?.ok) { alert(r?.msg || t('改名失败', 'Rename failed')); return }
+              setTreeV((v) => v + 1)
+            }}>✏️ {t('改名', 'Rename')}</button>
             <button
               className="danger"
               onClick={async () => {

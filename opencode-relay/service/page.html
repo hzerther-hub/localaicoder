@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
   <title>opencode</title>
   <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/highlight.github-dark.min.css">
 </head>
 <body>
   <!-- 侧栏：项目 / 会话 / 新建（桌面常驻，手机抽屉） -->
@@ -13,6 +14,9 @@
       <div class="brand"><span class="dot"></span>opencode<span class="ver" id="ver"></span></div>
       <div class="projw"><select id="proj"></select></div>
       <button id="sessNew" type="button">＋ 新会话</button>
+    </div>
+    <div class="side-grp" id="fsEntry" style="display:none">
+      <button id="btnFiles" type="button" style="width:100%">📁 文件（浏览 / 编辑）</button>
     </div>
     <div class="side-grp">会话</div>
     <div id="sessList"></div>
@@ -80,6 +84,79 @@
   <!-- 图片放大查看 -->
   <div id="lightbox"><img alt=""></div>
 
+  <!-- 文件窗口最小化条（加入对话框后停在聊天页，点击返回编辑） -->
+  <div id="fsMinBar">📄 <span id="fsMinName"></span><span style="color:#8a93a5">· 点击返回</span></div>
+  <!-- WEB 文件浏览面板（fs 开关开启后可用） -->
+  <div id="fsPanel">
+    <div class="fs-head">
+      <span class="fs-title" id="fsPanelTitle">📁 文件</span>
+      <button type="button" id="fsClose">✕</button>
+    </div>
+    <div class="fs-jump">
+      <input id="fsPath" placeholder="输入路径，留空看全部磁盘（如 D:\projects）">
+      <button type="button" id="fsGo">跳转</button>
+    </div>
+    <div class="fs-crumb" id="fsCrumb"></div>
+    <div id="fsList"></div>
+    <div class="fs-foot">
+      <button type="button" id="fsProj">📂 设为项目（切工作区）</button>
+      <span class="fs-hint" id="fsHint"></span>
+    </div>
+  </div>
+
+  <!-- 文件查看 / 编辑器 -->
+  <div id="fsView">
+    <div class="fs-head">
+      <span class="fs-title" id="fvName">file</span>
+      <span class="fs-act">
+        <button type="button" id="fvChat">💬 加入对话框</button>
+        <button type="button" id="fvDesktop" title="在电脑端编辑器打开">🖥 电脑端打开</button>
+        <button type="button" id="fvEdit">✎ 编辑</button>
+        <button type="button" id="fvSave" style="display:none">💾 保存</button>
+        <button type="button" id="fvMin" title="最小化，回到聊天">—</button>
+        <button type="button" id="fvClose">✕</button>
+      </span>
+    </div>
+    <div class="fs-meta" id="fvMeta"></div>
+    <div id="fvBody">
+      <pre id="fvPre"><code class="hljs"></code></pre>
+      <div id="fvEditWrap">
+        <pre id="fvHl" aria-hidden="true"><code class="hljs"></code></pre>
+        <textarea id="fvTa" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+        <button type="button" id="fvSelChat" style="display:none">💬 加入对话框</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- 文件操作菜单（编辑/改名/删除） -->
+  <div id="fsMenu">
+    <div class="fs-menu-box">
+      <div class="fs-menu-name" id="fsmName"></div>
+      <button type="button" data-act="chat">💬 加入对话框</button>
+      <button type="button" data-act="edit" id="fsmEdit">✎ 编辑</button>
+      <button type="button" data-act="rename">✏️ 改名</button>
+      <button type="button" data-act="del" class="danger">🗑 删除</button>
+      <button type="button" data-act="cancel">取消</button>
+    </div>
+  </div>
+
+
+  <!-- 重命名会话（美化版，预填当前标题，校验重名） -->
+  <div id="rnMask">
+    <div class="rn-box">
+      <div class="rn-title">✎ 重命名会话</div>
+      <input id="rnInput" maxlength="60" autocomplete="off" spellcheck="false" placeholder="会话名称">
+      <div class="rn-err" id="rnErr"></div>
+      <div class="rn-btns">
+        <button type="button" id="rnCancel">取消</button>
+        <button type="button" id="rnOk">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/highlight.min.js"></script>
+  <script src="js/hljs-powershell.min.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

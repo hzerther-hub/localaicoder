@@ -443,6 +443,8 @@ export const useStore = create<UIState>((set, get) => {
     onEvent('session:opened', (id) => { if (id && id !== get().sessionId) get().loadSession(id) })
     // 会话/项目结构变化（改名/删除/新建/切项目，含手机端触发）→ 桌面刷新侧栏
     onEvent('sessions:changed', () => { get().refreshSessions() })
+    // 手机端查看文件时点「在电脑端打开」→ 桌面编辑器同步打开（CodeMirror 按类型着色）
+    onEvent('editor:open', (p) => { if (p) get().openFile(p) })
     onEvent('model:changed', (k) => {
       api.listModels().then((all) => set({ models: all.filter((m) => !m.disabled), currentModel: k }))
       api.getCompactInfo().then((c) => { if (c) set({ compact: c }) })

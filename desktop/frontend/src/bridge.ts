@@ -135,6 +135,7 @@ export const api = {
   searchFiles: (q: string) => call<string[]>('SearchFiles', q),
   runTerminalCommand: (cmd: string) => call<{ output: string }>('RunTerminalCommand', cmd),
   deletePath: (p: string) => call<{ ok: boolean; msg?: string } | any>('DeletePath', p),
+  renamePath: (p: string, newName: string) => call<{ ok: boolean; msg?: string } | any>('RenamePath', p, newName),
   lspComplete: (p: string, t: string, l: number, c: number) => call<CompletionItem[]>('LspComplete', p, t, l, c),
   lspDiag: (p: string, t: string) => call<DiagItem[]>('LspDiag', p, t),
   lspServerStatus: (p: string) => call<{ supported: boolean; lang?: string; server?: string; available?: boolean; install_cmd?: string }>('LspServerStatus', p),
@@ -184,7 +185,9 @@ export const api = {
   relayDisconnect: () => call<{ ok: boolean }>('RelayDisconnect'),
   relayStatus: () => call<{ running: boolean; connected: boolean; server: string; phone_url: string; qr: string; error?: string }>('RelayStatus'),
   relayGenToken: () => call<string>('RelayGenToken'),
-  getRelayConfig: () => call<{ server_url: string; device_token: string }>('GetRelayConfig'),
+  getRelayConfig: () => call<{ server_url: string; device_token: string; fs_enabled?: boolean; fs_safe?: boolean }>('GetRelayConfig'),
+  relaySetFsEnabled: (on: boolean) => call<{ ok: boolean }>('RelaySetFsEnabled', on),
+  relaySetFsSafe: (on: boolean) => call<{ ok: boolean }>('RelaySetFsSafe', on),
   // Bot 渠道：Lark（国际版飞书）
   larkConnect: (appID: string, appSecret: string, allowlist: string) =>
     call<{ ok: boolean; msg?: string }>('LarkConnect', appID, appSecret, allowlist),

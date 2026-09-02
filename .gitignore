@@ -53,3 +53,6 @@ __pycache__/
 desktop/.gotmp/
 desktop/.playwright-mcp/
 AGENTS.md.local.bak
+
+# playwright-mcp 探针/工具运行产物
+.playwright-mcp/

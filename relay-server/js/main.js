@@ -69,12 +69,14 @@ function applyState(s){
  if(s.workspace&&window.__ws&&s.workspace!==window.__ws)projPin=false;
  const keep=(projPin&&wsCur)?wsCur:(s.workspace||wsCur);
  const opts=Object.keys(map).sort((a,b)=>map[b].u-map[a].u).map(w=>'<option value="'+esc(w)+'">'+esc(w.split('/').filter(Boolean).pop()||w)+' ('+map[w].n+')</option>').join('');
+ if(!opts)opts='<option value="">等待 PC 连接…</option>'; // 空状态占位，避免页头出现空白框
  if(opts!==window.__projOpts){window.__projOpts=opts;sel.innerHTML=opts;} // 选项没变不重建，避免打断手机端展开中的下拉
  wsCur=map[keep]?keep:(sel.options[0]?sel.options[0].value:'');sel.value=wsCur;
  window.__ws=s.workspace||'';window.__branch=s.branch||'';try{compact=(s.compact&&{budget:Number(s.compact.budget)||0,window:Number(s.compact.window)||0})||compact}catch(e){}
 renderStats();
 runs=new Set(ALL.filter(x=>x.running).map(x=>x.id));
   renderSteps(); // 状态刷新后重算步骤栏（含 runs 更新后，保证当前会话运行中能显示）
+ fsSyncAvail();
  try{$('modeSel').value=s.mode||'always'}catch(e){}
  const _cur=s.current||'';if(_cur&&_cur!==lastCurrent){lastCurrent=_cur;loadModels();}
  const _cs=s.current_session||'';if(_cs&&_cs!==sid){openS(_cs,false);}
@@ -116,7 +118,7 @@ async function openS(id,notify){
  // PC 端打开的会话：顶部同步实际工作区（桥单工作区下会话存的 directory 只代表创建地）；
  // 手机端自己点的会话不动当前项目选择
  if(!notify){const sx=ALL.find(x=>x.id===id);syncProj(window.__ws||(sx&&sx.workspace)||'');}
- sid=id;$('drawer').classList.remove('open');log.innerHTML='';cur=null;renderSess();codeLog.innerHTML='';codeSticky=true;$('codeRound').textContent='';
+ sid=id;$('drawer').classList.remove('open');log.innerHTML='';cur=null;renderSess();fsSyncAvail();codeLog.innerHTML='';codeSticky=true;$('codeRound').textContent='';
  setSessName();
  if(notify){try{ws.send(JSON.stringify({type:'open_session',id}))}catch(e){}}
  const m=await req({type:'messages',id});
@@ -186,9 +188,13 @@ const fsExtColor={js:'#e5c07b',mjs:'#e5c07b',ts:'#3178c6',tsx:'#3178c6',jsx:'#e5
 function fsColor(name){ const m=(name||'').split('.').pop().toLowerCase(); return fsExtColor[m]||'#8a93a5'; }
 function fsSend(o){ if(ws&&ws.readyState===1){ws.send(JSON.stringify(o));return true;} fsToast('连接未就绪'); return false; }
 function fsOpenPanel(){ if(!fsOn){ fsToast('未开启 WEB 文件访问：电脑端「移动端远程控制」面板打开开关'); return; }
- $('fsPanel').classList.add('on'); if(!fsDir)fsNav(window.__ws||''); }
+ if(!sid){ fsToast('先打开一个会话，文件列表随会话所属项目打开'); return; }
+ $('fsPanel').classList.add('on'); fsNav(window.__ws||''); }
+function fsSyncAvail(){ // 未选择会话时置灰文件入口（面板操作归属于当前会话的项目）
+ const d=!sid; ['hdrFiles','btnFiles'].forEach(id=>{ const b=$(id); if(b){ b.disabled=d; b.style.opacity=d?'.45':''; } });
+ const e=$('btnFiles'); if(e)e.style.display=fsOn?'':'none'; }
 $('btnFiles').onclick=fsOpenPanel;
-$('hdrFiles').onclick=fsOpenPanel;
+if($('hdrFiles'))$('hdrFiles').onclick=fsOpenPanel;
 $('fsClose').onclick=()=>$('fsPanel').classList.remove('on');
 $('fsGo').onclick=()=>fsNav($('fsPath').value.trim());
 $('fsPath').addEventListener('keydown',e=>{ if(e.key==='Enter')fsNav($('fsPath').value.trim()); });
@@ -315,10 +321,23 @@ let fsPendRefs=[];
 // Cursor 式引用：输入框只放短引用，实际内容作为 refs 附件由电脑端在发送时注入给模型
 function fsToChat(display,ref){ const i=$('i');
  // 引用只进附件标签（Cursor 式），源码与路径都不再塞进输入框
- if(ref){ fsPendRefs.push(ref);
-  const box=$('pendingAtts'); if(box){ const c=document.createElement('div'); c.className='att-chip';
-   c.textContent='📄 '+display; box.appendChild(c); } }
- $('fsMinName').textContent=display; fsMinimize(); i.focus(); fsToast('已加入对话框，回车发送'); }
+ if(ref){ const rr=Object.assign({display},ref); rr._uid=++attSeq; fsPendRefs.push(rr); fsAddRefChip(rr); }
+ fsCloseAllPopups(); $('fsMinName').textContent=display; fsMinimize(); i.focus();
+ try{document.body.classList.remove('coding')}catch(_){}
+ fsToast('已加入对话框，回车发送'); }
+
+function fsAddRefChip(rr){ const box=$('pendingAtts'); if(!box)return;
+ const c=document.createElement('div'); c.className='att-chip'; c.dataset.uid=rr._uid;
+ c.textContent='📄 '+(rr.start?(rr.start+'-'+rr.end+'行 '):'')+rr.display;
+ const x=document.createElement('span'); x.className='chip-x'; x.textContent='✕'; x.title='移除';
+ x.onclick=()=>{ fsPendRefs=fsPendRefs.filter(v=>v._uid!==rr._uid); c.remove(); };
+ c.appendChild(x); box.appendChild(c); }
+
+function fsCloseAllPopups(){ // 加入对话框后关闭所有弹出页，只留最小化条
+ const p=$('fsPanel'); if(p)p.classList.remove('on');
+ const m=$('fsMenu'); if(m)m.classList.remove('on');
+ document.body.classList.remove('dd-open');
+ document.querySelectorAll('.dd-pop.open').forEach(q=>q.classList.remove('open')); }
 $('fvChat').onclick=()=>{ fsToChat('📎 '+fsViewPath, {path:fsViewPath}); };
 function fsUpdateSelBtn(){
  const ta=$('fvTa'),btn=$('fvSelChat'); if(!ta||!btn)return;
@@ -394,14 +413,17 @@ $('proj').onchange=()=>{wsCur=$('proj').value;renderSess();
  projPin=true; // PC→手机：仅本地浏览锁定，PC 端切项目时自动跟随
 };
 $('qc').onclick=e=>{const b=e.target.closest('[data-p]');if(!b)return;const i=$('i');i.value=(i.value?i.value+'\n':'')+b.dataset.p;i.focus();};
-let pendingAtts=[];
-function addAttChip(a){const box=$('pendingAtts');if(!box)return;const c=document.createElement('div');c.className='att-chip';
+let pendingAtts=[];let attSeq=0;
+function addAttChip(a){const box=$('pendingAtts');if(!box)return;const c=document.createElement('div');c.className='att-chip';c.dataset.uid=a._uid||'';
  if((a.data||'').startsWith('data:image')){const im=document.createElement('img');im.src=a.data;c.appendChild(im);}
- const sp=document.createElement('span');sp.textContent=a.name;c.appendChild(sp);box.appendChild(c);}
+ const sp=document.createElement('span');sp.textContent=a.name;c.appendChild(sp);
+ const x=document.createElement('span');x.className='chip-x';x.textContent='✕';x.title='移除';
+ x.onclick=()=>{ if(a._uid){pendingAtts=pendingAtts.filter(v=>v._uid!==a._uid);} c.remove(); };
+ c.appendChild(x);box.appendChild(c);}
 function readAsImage(file,cb){const r=new FileReader();r.onload=()=>{const img=new Image();img.onload=()=>{const max=1280;let w=img.width,h=img.height;if(w>max||h>max){if(w>=h){h=Math.round(h*max/w);w=max;}else{w=Math.round(w*max/h);h=max;}}const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);cb(c.toDataURL('image/jpeg',0.8));};img.src=r.result;};r.readAsDataURL(file);}
 function readAsData(file,cb){const r=new FileReader();r.onload=()=>cb(r.result);r.readAsDataURL(file);}
-$('fileAny').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const isImg=(f.type||'').startsWith('image/');const cb=d=>{pendingAtts.push({name:f.name,data:d});addAttChip({name:f.name,data:d});};if(isImg)readAsImage(f,cb);else readAsData(f,cb);e.target.value='';});
-function addPasted(f){if(!f)return;const isImg=(f.type||'').startsWith('image/');const cb=d=>{pendingAtts.push({name:f.name||'pasted',data:d});addAttChip({name:f.name||'pasted',data:d});};if(isImg)readAsImage(f,cb);else readAsData(f,cb);}
+$('fileAny').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const isImg=(f.type||'').startsWith('image/');const cb=d=>{const it={name:f.name,data:d,_uid:++attSeq};pendingAtts.push(it);addAttChip(it);};if(isImg)readAsImage(f,cb);else readAsData(f,cb);e.target.value='';});
+function addPasted(f){if(!f)return;const isImg=(f.type||'').startsWith('image/');const cb=d=>{const it={name:f.name||'pasted',data:d,_uid:++attSeq};pendingAtts.push(it);addAttChip(it);};if(isImg)readAsImage(f,cb);else readAsData(f,cb);}
 // 粘贴（图片/文件）
 $('i').addEventListener('paste',e=>{const items=(e.clipboardData&&e.clipboardData.items)||[];const it=[].slice.call(items).find(x=>x.type&&x.type.startsWith('image/'));if(it){e.preventDefault();addPasted(it.getAsFile());}});
 // 拖放（图片/文件）→ 加入附件

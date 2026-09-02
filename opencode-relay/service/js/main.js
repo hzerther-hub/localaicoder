@@ -124,6 +124,8 @@ function connect(){
   else if(m.type==='question_request'){showQ(m);}
   else if(m.type==='fs'){fsSet(!!m.enabled,!!m.safe);}              // 电脑端切换文件开关
   else if(m.type==='hello'){fsSet(!!m.fs_enabled,!!m.fs_safe);}     // PC (重)连时同步开关
+  else if(m.type==='fs_list'){fsNav(m);}                            // 目录列表响应
+  else if(m.type==='fs_read'){fsOpenFile(m.path,m.size||0);}       // 文件读取响应
  };
  ws.onopen=()=>{setConn('live');loadState();loadModels();loadCommands();if(sid)openS(sid,false);};
  ws.onclose=(e)=>{let why='';const c=e&&e.code;if(c&&c!==1000)why=' (code '+c+')';setConn('dead');add('err','连接断开'+why+'，3 秒后重连…');setTimeout(()=>{log.innerHTML='';cur=null;connect();},3000);};
@@ -157,6 +159,7 @@ function applyState(s){
  // 流式渲染中（cur 存在）不自动跳转/清屏，防止把刚发出的回显和回复洗掉
  if(!sid&&!cur){const cand=ALL.filter(x=>(x.workspace||'')===wsCur).sort((a,b)=>b.updated-a.updated)[0];if(cand)openS(cand.id,false);}
  setSessName();renderSess();badge();
+ fsSyncAvail();
 }
 function loadState(){req({type:'state'}).then(applyState).catch(()=>{});}
 let steps=[],round=0,planned=false;
@@ -190,7 +193,7 @@ $('runsBar').onclick=e=>{const c=e.target.closest('.rr');if(!c)return;projPin=fa
 async function openS(id,notify){
  const seq=++openSeq;
  if(!notify){const sx=ALL.find(x=>x.id===id);syncProj(window.__ws||(sx&&sx.workspace)||'');}
- sid=id;closeSide();
+ sid=id;closeSide();fsSyncAvail();
  log.innerHTML='';cur=null;renderSess();setSessName();badge();
  if(notify){try{ws.send(JSON.stringify({type:'open_session',id}))}catch(e){}}
  const m=await req({type:'messages',id});
@@ -288,14 +291,17 @@ $('f').onsubmit=ev=>{ev.preventDefault();
 
 /* ---------- 附件（按钮 / 选择 / 粘贴 / 拖放） ---------- */
 $('btnAtt').onclick=()=>{try{$('fileAny').click()}catch(_){}};
-let pendingAtts=[];
-function addAttChip(a){const box=$('pendingAtts');if(!box)return;const c=document.createElement('div');c.className='att-chip';
+let pendingAtts=[];let attSeq=0;
+function addAttChip(a){const box=$('pendingAtts');if(!box)return;const c=document.createElement('div');c.className='att-chip';c.dataset.uid=a._uid||'';
  if((a.data||'').startsWith('data:image')){const im=document.createElement('img');im.src=a.data;c.appendChild(im);}
- const sp=document.createElement('span');sp.textContent=a.name;c.appendChild(sp);box.appendChild(c);}
+ const sp=document.createElement('span');sp.textContent=a.name;c.appendChild(sp);
+ const x=document.createElement('span');x.className='chip-x';x.textContent='✕';x.title='移除';
+ x.onclick=()=>{ if(a._uid){pendingAtts=pendingAtts.filter(v=>v._uid!==a._uid);} c.remove(); };
+ c.appendChild(x);box.appendChild(c);}
 function readAsImage(file,cb){const r=new FileReader();r.onload=()=>{const img=new Image();img.onload=()=>{const max=1280;let w=img.width,h=img.height;if(w>max||h>max){if(w>=h){h=Math.round(h*max/w);w=max;}else{w=Math.round(w*max/h);h=max;}}const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);cb(c.toDataURL('image/jpeg',0.8));};img.src=r.result;};r.readAsDataURL(file);}
 function readAsData(file,cb){const r=new FileReader();r.onload=()=>cb(r.result);r.readAsDataURL(file);}
-$('fileAny').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const isImg=(f.type||'').startsWith('image/');const cb=d=>{pendingAtts.push({name:f.name,data:d});addAttChip({name:f.name,data:d});};if(isImg)readAsImage(f,cb);else readAsData(f,cb);e.target.value='';});
-function addPasted(f){if(!f)return;const isImg=(f.type||'').startsWith('image/');const cb=d=>{pendingAtts.push({name:f.name||'pasted',data:d});addAttChip({name:f.name||'pasted',data:d});};if(isImg)readAsImage(f,cb);else readAsData(f,cb);}
+$('fileAny').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const isImg=(f.type||'').startsWith('image/');const cb=d=>{const it={name:f.name,data:d,_uid:++attSeq};pendingAtts.push(it);addAttChip(it);};if(isImg)readAsImage(f,cb);else readAsData(f,cb);e.target.value='';});
+function addPasted(f){if(!f)return;const isImg=(f.type||'').startsWith('image/');const cb=d=>{const it={name:f.name||'pasted',data:d,_uid:++attSeq};pendingAtts.push(it);addAttChip(it);};if(isImg)readAsImage(f,cb);else readAsData(f,cb);}
 $('i').addEventListener('paste',e=>{const items=(e.clipboardData&&e.clipboardData.items)||[];const it=[].slice.call(items).find(x=>x.type&&x.type.startsWith('image/'));if(it){e.preventDefault();addPasted(it.getAsFile());}});
 document.addEventListener('dragover',e=>e.preventDefault());
 document.addEventListener('drop',e=>{e.preventDefault();const fs=(e.dataTransfer&&e.dataTransfer.files)||[];[].slice.call(fs).forEach(addPasted);});
@@ -447,10 +453,23 @@ let fsPendRefs=[];
 // Cursor 式引用：输入框只放短引用，实际内容作为 refs 附件由电脑端在发送时注入给模型
 function fsToChat(display,ref){ const i=$('i');
  // 引用只进附件标签（Cursor 式），源码与路径都不再塞进输入框
- if(ref){ fsPendRefs.push(ref);
-  const box=$('pendingAtts'); if(box){ const c=document.createElement('div'); c.className='att-chip';
-   c.textContent='📄 '+display; box.appendChild(c); } }
- $('fsMinName').textContent=display; fsMinimize(); i.focus(); fsToast('已加入对话框，回车发送'); }
+ if(ref){ const rr=Object.assign({display},ref); rr._uid=++attSeq; fsPendRefs.push(rr); fsAddRefChip(rr); }
+ fsCloseAllPopups(); $('fsMinName').textContent=display; fsMinimize(); i.focus();
+ try{document.body.classList.remove('coding')}catch(_){}
+ fsToast('已加入对话框，回车发送'); }
+
+function fsAddRefChip(rr){ const box=$('pendingAtts'); if(!box)return;
+ const c=document.createElement('div'); c.className='att-chip'; c.dataset.uid=rr._uid;
+ c.textContent='📄 '+(rr.start?(rr.start+'-'+rr.end+'行 '):'')+rr.display;
+ const x=document.createElement('span'); x.className='chip-x'; x.textContent='✕'; x.title='移除';
+ x.onclick=()=>{ fsPendRefs=fsPendRefs.filter(v=>v._uid!==rr._uid); c.remove(); };
+ c.appendChild(x); box.appendChild(c); }
+
+function fsCloseAllPopups(){ // 加入对话框后关闭所有弹出页，只留最小化条
+ const p=$('fsPanel'); if(p)p.classList.remove('on');
+ const m=$('fsMenu'); if(m)m.classList.remove('on');
+ document.body.classList.remove('dd-open');
+ document.querySelectorAll('.dd-pop.open').forEach(q=>q.classList.remove('open')); }
 $('fvChat').onclick=()=>{ fsToChat('📎 '+fsViewPath, {path:fsViewPath}); };
 function fsUpdateSelBtn(){
  const ta=$('fvTa'),btn=$('fvSelChat'); if(!ta||!btn)return;

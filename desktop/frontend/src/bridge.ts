@@ -201,6 +201,12 @@ export const api = {
   getTelegramConfig: () => call<{ bot_token: string; allowlist: string }>('GetTelegramConfig'),
   compactHistory: () => call<{ ok: boolean; before?: number; after?: number; msg?: string }>('CompactHistory'),
   doctor: () => call<{ checks: { name: string; ok: boolean; detail: string }[] }>('Doctor'),
+  // 项目知识检索（memsearch/pykb）检测与一键安装（desktop/memsearch.go、desktop/pykb.go）。
+  // installMemsearch(via) 立即返回（ok=流程已启动），进度走 memsearch:install:log / :done 事件；
+  // via：''=自动（Windows→pykb，其它→native）/ 'native'（uv 原生 memsearch）/ 'wsl' / 'pykb'（pip fastembed）。
+  memsearchStatus: () => call<{ installed: boolean; path?: string; uv_available: boolean; native_ok: boolean; pykb_deps: boolean; pykb_running: boolean; wsl_available: boolean; wsl_memsearch: boolean; usable: boolean; install_cmd: string }>('MemsearchStatus'),
+  installMemsearch: (via: string) => call<{ ok: boolean; msg?: string; error?: string }>('InstallMemsearch', via || ''),
+  memsearchRun: (argv: string[]) => call<{ ok: boolean; output?: string; error?: string }>('MemsearchRun', argv),
   acceptDraft: (p: string) => call<boolean>('AcceptDraft', p),
   discardDraft: (p: string) => call<boolean>('DiscardDraft', p),
   deleteSkill: (p: string) => call<boolean>('DeleteSkill', p),

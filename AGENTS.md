@@ -101,6 +101,14 @@ memsearch search "问题关键词" -c localaicoder -k 5   # 返回带 Source 路
 
 更新文档后重索引用 `memsearch index -c localaicoder <路径>`（增量）。跨项目共用一个库，靠 collection 区分。
 
+**用前自检**（各机器环境不同，文档说"已安装"不代表本机已装）：首次使用先跑 `memsearch --version` 探测；**Windows 原生不可用**（milvus-lite 无 Windows 轮子，初始化即报错）——Windows 上用 **pykb**（应用自动拉起 `127.0.0.1:19587`，或命令行 `python desktop/pykb/kb_service.py search "关键词" -c localaicoder -k 5`）或 WSL 内 memsearch；Linux/macOS 未安装则直接装好再干活（不要只丢命令让用户自己敲）：
+
+```bash
+uv tool install memsearch --force --with onnxruntime --with tokenizers   # 国内下载模型时加 HF_ENDPOINT=https://hf-mirror.com
+```
+
+桌面端（Local AI Studio）启动时自动路由：Linux/macOS 用原生 memsearch（未装出引导条一键装）；Windows 用 **pykb**（自研 Python 语义检索 [github.com/hzerther-hub/pykb](https://github.com/hzerther-hub/pykb)，应用启动自动拉起服务，依赖未装时引导条一键 pip 安装）；应用内 `/memsearch 关键词` 三平台通用（`desktop/memsearch.go` + `desktop/pykb.go`）。
+
 ## 测试与 QA
 
 - **仅 stdlib `testing`**——无 testify/gomock（testify 只是 desktop/go.sum 里 wails 的传递依赖，从不 import）；手工 `if` + `t.Fatal/t.Errorf`。全部白盒同包测试；无 `t.Run` 子测试（表驱动数据用函数内字面量）、无 benchmark、无 `-race`、无覆盖率工具。

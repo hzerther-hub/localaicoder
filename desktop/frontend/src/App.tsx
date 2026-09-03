@@ -3,6 +3,7 @@ import { useStore, t } from './store'
 import Toolbar from './components/Toolbar'
 import Sidebar from './components/Sidebar'
 import ChatView from './components/ChatView'
+import MemsearchHint from './components/MemsearchHint'
 import Composer from './components/Composer'
 import StepBar from './components/StepBar'
 import SkillsPanel from './components/SkillsPanel'
@@ -52,6 +53,7 @@ export default function App() {
       <div className={`main${editor ? '' : ' no-editor'}`}>
         <Sidebar />
         <div className="chat-col">
+          <MemsearchHint />
           <ChatView />
           <StepBar />
           <Composer />

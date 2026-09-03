@@ -69,6 +69,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.updateWindowTitle()
 	go a.scheduleLoop() // 定时任务调度器（desktop/schedule.go）
+	go pykbAutoStart()  // pykb 语义检索服务按需拉起（desktop/pykb.go；依赖未装时静默跳过）
 	// 自建中继：启动时若已配置（server+token 均非空）自动连接，避免重启后手机端一直重连
 	if cfg := config.GetRelayConfig(); cfg["server_url"] != "" && cfg["device_token"] != "" {
 		go relayC.Connect(a, msg.S(cfg, "server_url"), msg.S(cfg, "device_token"))

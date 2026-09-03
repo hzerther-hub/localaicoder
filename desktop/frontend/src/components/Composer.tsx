@@ -21,7 +21,7 @@ async function runCommand(raw: string, st: ReturnType<typeof useStore.getState>)
       break
     }
     case 'help':
-      st.notice('**斜杠命令**\n- `/new` 新会话 · `/clear` 清屏 · `/model` 模型\n- `/file` 选文件/图片上传识别 · `/dir [路径]` 切目录 · `/permission` 权限 · `/context` 独立提问\n- `/index` 重建索引 · `/branch` 当前分支 · `/export` 导出会话\n- `/init` 生成 AGENTS.md · `/bug [范围]` 排查修复 BUG\n- `/kb` 知识库 · `/skills` 技能 · `/changes` 改动\n- `/mcp` MCP · `/dispatch` 派发 · `/cache` 缓存\n\n**其它前缀**\n- `@关键词` 文件补全（↑↓ 选择，Enter 插入路径）\n- `!命令` 直接在工作区执行（不经过模型）')
+      st.notice('**斜杠命令**\n- `/new` 新会话 · `/clear` 清屏 · `/model` 模型\n- `/file` 选文件/图片上传识别 · `/dir [路径]` 切目录 · `/permission` 权限 · `/context` 独立提问\n- `/index` 重建索引 · `/branch` 当前分支 · `/export` 导出会话\n- `/init` 生成 AGENTS.md · `/bug [范围]` 排查修复 BUG\n- `/kb` 知识库 · `/skills` 技能 · `/changes` 改动\n- `/mcp` MCP · `/dispatch` 派发 · `/cache` 缓存\n- `/memsearch 关键词` 项目文档语义检索（index/stats 子命令见 `/memsearch`）\n\n**其它前缀**\n- `@关键词` 文件补全（↑↓ 选择，Enter 插入路径）\n- `!命令` 直接在工作区执行（不经过模型）')
       break
     case 'bug': {
       // 对齐 Claude Code 式工作流：系统排查 bug → 修复 → 验证闭环
@@ -45,6 +45,46 @@ async function runCommand(raw: string, st: ReturnType<typeof useStore.getState>)
         '3. 使用中文，信息必须来自真实文件内容，不要编造；若已存在 AGENTS.md，按现状修订而非推倒重写。',
         'Analyze the codebase in the current workspace and generate/update AGENTS.md at the workspace root for future AI assistants. Browse the directory structure and key entry files first; include an overview, tech stack, directory guide, build/test/run commands, and conventions. Use real file contents only; revise (do not blindly overwrite) an existing AGENTS.md. Write it in Chinese.'
       ))
+      break
+    }
+    case 'memsearch': {
+      // memsearch 项目知识检索：裸参数=语义搜索（整句一个查询，无引号问题）；
+      // search/index/stats 开头=原样透传 CLI；任意复杂用法走 `!memsearch ...`
+      const q = arg.trim()
+      const col = 'localaicoder'
+      if (!q) {
+        st.notice(`**memsearch 项目知识检索**（本地语义检索，省 token）\n- \`/memsearch 关键词\`：语义搜索本仓库文档，默认库 ${col} top5\n- \`/memsearch index\`：改完文档后增量索引（AGENTS.md + docs）\n- \`/memsearch stats\`：查看库容量\n- 复杂用法：\`/memsearch search 关键词 -c 库 -k 10\` 或 \`!memsearch ...\` 直通 CLI\n\n**引擎路由（自动）**：Linux/macOS 用原生 memsearch；Windows 用内置的 **pykb**（自研 Python 语义检索，github.com/hzerther-hub/pykb，依赖未装时引导条一键安装）；均不可用时回退**内置知识库**（零安装）`)
+        break
+      }
+      let argv: string[]
+      if (q === 'stats') argv = ['stats']
+      else if (q === 'index') argv = ['index', '-c', col, 'AGENTS.md', 'docs']
+      else if (/^(search|index|stats)\s/.test(q)) argv = q.split(/\s+/)
+      else argv = ['search', q, '-c', col, '-k', '5']
+      st.notice(t('🔍 memsearch 运行中…（首次运行需先下载约 570MB 向量模型，请耐心等待）', '🔍 running memsearch… (first run downloads the ~570MB embedding model)'))
+      try {
+        const r = await api.memsearchRun(argv)
+        if (r?.ok) {
+          const out = r.output || t('（无输出）', '(no output)')
+          st.notice(`**🔍 memsearch ${argv[0]}**\n\n\`\`\`\n${out.length > 3000 ? out.slice(0, 3000) + '\n…（已截断）' : out}\n\`\`\``)
+        } else if (/^(search|index|stats)\s/.test(q)) {
+          // 显式子命令失败：原样报错（power user 自己排查）
+          st.notice(`❌ ${r?.error || t('运行失败', 'Failed')}${r?.output ? `\n\n\`\`\`\n${r.output.slice(-1500)}\n\`\`\`` : ''}`)
+        } else {
+          // Windows 原生回退：内置知识库（TF-IDF，零安装）——语义版需 WSL2 memsearch
+          let hits: any[] = []
+          try { hits = (await api.kbQuery(q)) || [] } catch { hits = [] }
+          if (hits.length) {
+            const lines = hits.map((h) =>
+              `**${h.File}${h.StartLine ? ':' + h.StartLine : ''}** · ${Number(h.Score || 0).toFixed(3)}\n${String(h.Content || '').slice(0, 400)}`)
+            st.notice(`📚 ${t('内置知识库回退（Windows 原生，TF-IDF）', 'Built-in KB fallback (Windows, TF-IDF)')}\n\n${lines.join('\n\n')}`)
+          } else {
+            st.notice(`❌ ${r?.error || t('运行失败', 'Failed')}\n\n📚 ${t('可用替代：知识库面板配置 AGENTS.md、docs 等根目录并构建（零安装，/memsearch 会自动回退）；或安装 WSL2 版 memsearch（语义检索更准）。', 'Alternatives: configure & build the built-in KB (zero-install), or install the WSL2 memsearch for true semantic search.')}`)
+          }
+        }
+      } catch (e: any) {
+        st.notice(`❌ ${t('运行异常: ', 'Error: ')}${e?.message || e}`)
+      }
       break
     }
     case 'new': st.newSession(); break
@@ -329,6 +369,7 @@ export default function Composer() {
             <span><b>/model</b> 模型</span><span><b>/dir</b> 目录</span>
             <span><b>/init</b> 生成 AGENTS.md</span><span><b>/bug</b> 修 BUG</span>
             <span><b>/kb</b> 知识库</span><span><b>/skills</b> 技能</span>
+            <span><b>/memsearch</b> 文档检索</span>
             <span><b>/export</b> 导出</span><span><b>/help</b> 更多…</span>
           </div>
         )}

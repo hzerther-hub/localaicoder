@@ -211,6 +211,34 @@ select option { background: var(--bg-panel); color: var(--text); }
 /* ---------------- 聊天区 ---------------- */
 .chat-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
+/* memsearch 引导条（MemsearchHint）：未安装项目知识检索时的启动提示，可一键安装/关闭。
+   上行 mh-row（图标/文案/按钮），安装中在下方 mh-log 实时滚动安装日志。 */
+.mem-hint {
+  flex: none; padding: 7px 12px; font-size: 12px; color: var(--text-dim);
+  background: var(--bg-raised); border-bottom: 1px solid var(--border);
+}
+.mem-hint .mh-row { display: flex; align-items: center; gap: 8px; }
+.mem-hint .mh-text { flex: 1; min-width: 0; }
+.mem-hint .mh-err { display: block; color: var(--red); margin-top: 2px; white-space: pre-wrap; word-break: break-all; }
+.mem-hint .mh-log {
+  max-height: 96px; overflow-y: auto; margin-top: 6px; padding: 6px 8px;
+  font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--text-faint);
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  white-space: pre-wrap; word-break: break-all;
+}
+.mem-hint .mh-btn {
+  flex: none; padding: 3px 10px; font-size: 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--accent); background: var(--accent-soft); color: var(--text); cursor: pointer;
+}
+.mem-hint .mh-btn:hover { background: var(--accent-strong); }
+.mem-hint .mh-btn.ghost { border-color: var(--border-strong); background: transparent; color: var(--text-dim); }
+.mem-hint .mh-btn.ghost:hover { background: var(--bg-hover); color: var(--text); }
+.mem-hint .mh-x {
+  flex: none; width: 20px; height: 20px; line-height: 18px; padding: 0;
+  border: none; background: transparent; color: var(--text-faint); cursor: pointer; font-size: 14px;
+}
+.mem-hint .mh-x:hover { color: var(--text); }
+
 .chat-scroll {
   flex: 1;
   overflow-y: auto;

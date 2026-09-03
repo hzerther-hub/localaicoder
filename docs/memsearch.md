@@ -11,6 +11,17 @@
   国内网络加 `HF_ENDPOINT=https://hf-mirror.com`）。纯本地 CPU 推理，不是对话模型、不耗 API。
 - 总结/提炼类 LLM 工作不在此工具内，由 harness 侧 agent 完成。
 
+## 平台路由（桌面端自动，/memsearch 同一套）
+
+| 平台 | 首选 | 兜底 |
+|---|---|---|
+| Linux/macOS | 原生 memsearch | **pykb**（自研，`desktop/pykb/`，pip 装 fastembed 即用）→ 内置知识库（零安装） |
+| Windows | **pykb**（原生装不了：milvus-lite 无 Windows 轮子） | WSL 内 memsearch / 内置知识库 |
+
+**pykb**（[github.com/hzerther-hub/pykb](https://github.com/hzerther-hub/pykb)）是自研的单文件
+Python 语义检索：bge-small-zh-v1.5（约 95MB）+ BM25 + RRF 混合检索，桌面端把它 `go:embed` 进
+exe、启动时自动拉起为 `127.0.0.1:19587` 服务，`/memsearch` 自动路由。数据在 `~/.pykb/`。
+
 ## 本项目的 collection
 
 | collection | 内容 | 维护 |
@@ -35,12 +46,16 @@ memsearch index -c localaicoder --force docs    # 全量重索引
 memsearch stats
 ```
 
-## 安装与维护（已完成，备查）
+## 安装与维护（备查）
+
+**按机器安装**——「已完成」只对装过的那台机器成立，换机器要重装。桌面应用（LocalAI Studio）启动时会自动检测：
+- Linux/macOS：未装则出引导条一键原生安装（实现 `desktop/memsearch.go`，检测含 uv shim 目录，规避装后 PATH 不刷新的坑）。
+- Windows：引导条提供「安装到 WSL2」（发行版内自动装 uv + memsearch + ONNX 配置，经 `wsl.exe` 调用）；无 WSL 则引导用内置知识库（零安装，`/memsearch` 自动回退）。
 
 ```bash
 uv tool install memsearch --force --with onnxruntime --with tokenizers
 #   ↑ onnxruntime 必须用 --with 注入：裸装 memsearch 不含 ONNX provider，重装时别丢
-# 配置在 ~/.memsearch/config.toml：[embedding] provider = "onnx"
+# 配置在 ~/.memsearch/config.toml：[embedding] provider = "onnx"（桌面端一键安装会自动补这份配置）
 ```
 
 ## 与 AGENTS.md 的关系

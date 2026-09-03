@@ -91,6 +91,16 @@ CI（`.github/workflows/ci.yml`，push/PR → `master`）：job `go`（build/vet
 - 内核读取的环境变量：`LAS_SANDBOX`（`off|0|false|no` 关闭写/shell 沙箱）、`LOCAL_AI_PRODUCT`、`LAS_PRODUCTS_DIR`、`LAS_PORTAL_DEBUG`（Wayland 截图调试）。**API key 在 `models.json` 按 provider 存放**（本地 provider 用字面量 `"local-noauth"`），绝不放环境变量。
 - 配置目录：`~/.config/local-ai-studio` / `%APPDATA%\local-ai-studio`；目标目录缺失时从 `wellfuture-coder`/`qwen-coder` 遗留目录 copyTree 迁移。
 
+## 项目知识检索（memsearch，省 token）
+
+本仓库文档（AGENTS/README/docs/opencode-relay/relay-server 等，448 块）已索引进本地向量库（milvus-lite + bge-m3 int8/ONNX，全本地零 API）。**回答架构/部署/协议/中继类问题前先检索，不要整篇读长文档**：
+
+```bash
+memsearch search "问题关键词" -c localaicoder -k 5   # 返回带 Source 路径+Heading 的相关小块，按需再读原文那一节
+```
+
+更新文档后重索引用 `memsearch index -c localaicoder <路径>`（增量）。跨项目共用一个库，靠 collection 区分。
+
 ## 测试与 QA
 
 - **仅 stdlib `testing`**——无 testify/gomock（testify 只是 desktop/go.sum 里 wails 的传递依赖，从不 import）；手工 `if` + `t.Fatal/t.Errorf`。全部白盒同包测试；无 `t.Run` 子测试（表驱动数据用函数内字面量）、无 benchmark、无 `-race`、无覆盖率工具。

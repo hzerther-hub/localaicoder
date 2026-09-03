@@ -22,6 +22,7 @@
 /desktop/bin/
 /desktop/build/bin/
 /desktop/desktop
+/desktop/desktop.exe
 /desktop/frontend/dist/*
 !/desktop/frontend/dist/index.html
 /desktop/frontend/wailsjs/

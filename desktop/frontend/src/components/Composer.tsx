@@ -53,13 +53,16 @@ async function runCommand(raw: string, st: ReturnType<typeof useStore.getState>)
       const q = arg.trim()
       const col = 'localaicoder'
       if (!q) {
-        st.notice(`**memsearch 项目知识检索**（本地语义检索，省 token）\n- \`/memsearch 关键词\`：语义搜索本仓库文档，默认库 ${col} top5\n- \`/memsearch index\`：改完文档后增量索引（AGENTS.md + docs）\n- \`/memsearch stats\`：查看库容量\n- 复杂用法：\`/memsearch search 关键词 -c 库 -k 10\` 或 \`!memsearch ...\` 直通 CLI\n\n**引擎路由（自动）**：Linux/macOS 用原生 memsearch；Windows 用内置的 **pykb**（自研 Python 语义检索，github.com/hzerther-hub/pykb，依赖未装时引导条一键安装）；均不可用时回退**内置知识库**（零安装）`)
+        st.notice(`**memsearch 项目知识检索**（本地语义检索，省 token）\n- \`/memsearch 关键词\`：语义搜索本仓库文档，默认库 ${col} top5\n- \`/memsearch index\`：改完文档后增量索引（AGENTS.md + docs）\n- \`/memsearch stats\`：查看当前模型/库容量/可用模型\n- \`/memsearch model [名称]\`：列出或切换默认嵌入模型（pykb 路线）\n- 复杂用法：\`/memsearch search 关键词 -c 库 -k 10\` 或 \`!memsearch ...\` 直通 CLI\n\n**引擎路由（自动）**：Linux/macOS 用原生 memsearch；Windows 用内置的 **pykb**（自研 Python 语义检索，github.com/hzerther-hub/pykb，依赖未装时引导条一键安装）；均不可用时回退**内置知识库**（零安装）`)
         break
       }
       let argv: string[]
       if (q === 'stats') argv = ['stats']
       else if (q === 'index') argv = ['index', '-c', col, 'AGENTS.md', 'docs']
-      else if (/^(search|index|stats)\s/.test(q)) argv = q.split(/\s+/)
+      else if (q === 'model') argv = ['model']
+      else if (q.startsWith('model ')) argv = ['model', ...q.slice(6).split(/\s+/)]
+      else if (q === 'models') argv = ['stats']   // 别名：列出可用模型
+      else if (/^(search|index|stats|model)\s/.test(q)) argv = q.split(/\s+/)
       else argv = ['search', q, '-c', col, '-k', '5']
       st.notice(t('🔍 memsearch 运行中…（首次运行需先下载约 570MB 向量模型，请耐心等待）', '🔍 running memsearch… (first run downloads the ~570MB embedding model)'))
       try {
@@ -67,7 +70,7 @@ async function runCommand(raw: string, st: ReturnType<typeof useStore.getState>)
         if (r?.ok) {
           const out = r.output || t('（无输出）', '(no output)')
           st.notice(`**🔍 memsearch ${argv[0]}**\n\n\`\`\`\n${out.length > 3000 ? out.slice(0, 3000) + '\n…（已截断）' : out}\n\`\`\``)
-        } else if (/^(search|index|stats)\s/.test(q)) {
+        } else if (/^(search|index|stats|model)\s/.test(q) || ['index', 'stats', 'model', 'models'].includes(q)) {
           // 显式子命令失败：原样报错（power user 自己排查）
           st.notice(`❌ ${r?.error || t('运行失败', 'Failed')}${r?.output ? `\n\n\`\`\`\n${r.output.slice(-1500)}\n\`\`\`` : ''}`)
         } else {

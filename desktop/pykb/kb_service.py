@@ -40,43 +40,83 @@ from pathlib import Path
 
 import numpy as np
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-MODEL_NAME = "BAAI/bge-small-zh-v1.5"   # 中英双语，512 维，约 95MB，ONNX CPU 推理
-MAX_CHARS = 800                          # 单块字符上限（bge 512 token 的安全中文长度）
-DEFAULT_COL = "memsearch_chunks"         # 与 memsearch 的默认 collection 同名对齐
+# 默认模型：~/.pykb/config.toml 的 [embedding] name 优先于它；持久化在每个 collection 的 meta
+DEFAULT_MODEL = "BAAI/bge-small-zh-v1.5"
+MODEL_NAME = DEFAULT_MODEL                   # 兼容旧名（实际取自 _models 缓存）
+MAX_CHARS = 800
+DEFAULT_COL = "memsearch_chunks"
 DATA_DIR = Path.home() / ".pykb"
 DOC_EXTS = {".md", ".markdown", ".mdx", ".txt", ".rst"}
-# 默认跳过的目录（跨平台常见噪音）+ 隐藏目录
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
              "build", "target", ".idea", ".vscode", ".playwright-mcp", ".memsearch"}
 BM25_K1, BM25_B = 1.5, 0.75
 RRF_K = 60
 
-_model = None
-_model_lock = threading.Lock()
+# fastembed 支持的常用嵌入模型：name → 期望向量维度
+MODEL_DIM = {
+    "BAAI/bge-small-zh-v1.5": 512,
+    "BAAI/bge-base-zh-v1.5": 768,
+    "BAAI/bge-large-zh-v1.5": 1024,
+    "BAAI/bge-m3": 1024,
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": 384,
+}
+
+# 模型池：name → (TextEmbedding 实例)。按 collection 维度懒加载并缓存。
+_models: dict = {}
+_models_lock = threading.Lock()
+_active_model = DEFAULT_MODEL
 
 
 def log(msg):
     print(f"[pykb {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def get_model():
-    """懒加载嵌入模型（进程内单例；首次会从 HF 下载约 95MB）。"""
-    global _model
-    with _model_lock:
-        if _model is None:
+def _read_config() -> dict:
+    """读取 ~/.pykb/config.toml 的 [embedding] 段（容错：缺/坏/无 tomllib 都返回 {}）。"""
+    cfg = DATA_DIR / "config.toml"
+    if not cfg.exists():
+        return {}
+    try:
+        try:
+            import tomllib  # py 3.11+
+        except Exception:
+            import tomli as tomllib  # type: ignore
+        with open(cfg, "rb") as f:
+            return tomllib.load(f).get("embedding", {})
+    except Exception:
+        return {}
+
+
+def _write_config(name: str) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "config.toml").write_text(
+        f"[embedding]\nprovider = \"fastembed\"\nname = \"{name}\"\n", encoding="utf-8")
+
+
+def get_model(name: str = ""):
+    """按名取嵌入模型实例（懒加载并按名缓存）。空串 = 当前 config 默认。"""
+    global _active_model
+    if not name:
+        name = _read_config().get("name") or DEFAULT_MODEL
+    if name not in MODEL_DIM:
+        log(f"未知模型 {name}，回退默认 {DEFAULT_MODEL}")
+        name = DEFAULT_MODEL
+    with _models_lock:
+        if name not in _models:
             from fastembed import TextEmbedding
-            log(f"加载嵌入模型 {MODEL_NAME}（首次会自动下载）…")
-            _model = TextEmbedding(MODEL_NAME)
-            log("嵌入模型就绪")
-        return _model
+            log(f"加载嵌入模型 {name}（首次会自动下载）…")
+            _models[name] = TextEmbedding(name)
+            log(f"嵌入模型 {name} 就绪（{MODEL_DIM[name]} 维）")
+        _active_model = name
+        return _models[name]
 
 
-def embed(texts: list[str]) -> np.ndarray:
+def embed(texts: list[str], model_name: str = "") -> np.ndarray:
     if not texts:
-        return np.zeros((0, 512), dtype=np.float32)
-    return np.array(list(get_model().embed(texts)), dtype=np.float32)
+        return np.zeros((0, MODEL_DIM.get(model_name or _active_model, 512)), dtype=np.float32)
+    return np.array(list(get_model(model_name).embed(texts)), dtype=np.float32)
 
 
 # ---------------- 分块 ----------------
@@ -192,12 +232,15 @@ def col_paths(collection: str) -> tuple[Path, Path]:
 def load_store(collection: str):
     npz, jsn = col_paths(collection)
     if not jsn.exists():
-        return {"files": {}, "order": []}, np.zeros((0, 512), dtype=np.float32)
+        return ({"files": {}, "order": [], "model": DEFAULT_MODEL, "dim": MODEL_DIM[DEFAULT_MODEL]},
+                np.zeros((0, MODEL_DIM[DEFAULT_MODEL]), dtype=np.float32))
     meta = json.loads(jsn.read_text(encoding="utf-8"))
+    meta.setdefault("model", DEFAULT_MODEL)
+    meta.setdefault("dim", MODEL_DIM.get(meta["model"], 512))
     if npz.exists():
         mat = np.load(npz)["v"]
     else:
-        mat = np.zeros((0, 512), dtype=np.float32)
+        mat = np.zeros((0, meta["dim"]), dtype=np.float32)
     return meta, mat
 
 
@@ -225,16 +268,26 @@ def row_offsets(meta: dict) -> dict[str, tuple[int, int]]:
 # ---------------- 索引 ----------------
 
 def do_index(collection: str, paths: list[str], excludes: list[str] | None = None,
-             force: bool = False) -> dict:
+             force: bool = False, model_name: str = "") -> dict:
     excludes = excludes or []
+    model_name = model_name or _read_config().get("name") or DEFAULT_MODEL
+    expected_dim = MODEL_DIM.get(model_name, 512)
+    if model_name not in MODEL_DIM:
+        return {"ok": False, "error": f"未知模型：{model_name}", "available": sorted(MODEL_DIM.keys())}
     t0 = time.time()
     meta, mat = load_store(collection)
+    # 跨模型保护：旧库用不同模型 → 不重建（用户需显式 delete 后重来）
+    if mat.size and meta.get("model") and meta["model"] != model_name:
+        return {"ok": False,
+                "error": f"库 {collection} 用模型 {meta['model']}（{meta['dim']} 维），"
+                         f"当前默认 {model_name}（{expected_dim} 维）：切换模型请先 "
+                         f"`pykb delete -c {collection} --force` 再 index"}
     old_off = row_offsets(meta)
     files = collect_files(paths, excludes)
     if not files:
         return {"ok": False, "error": "未找到可索引的文档文件", "files": 0, "chunks": 0}
 
-    new_meta: dict = {"files": {}, "order": []}
+    new_meta: dict = {"files": {}, "order": [], "model": model_name, "dim": expected_dim}
     rows: list[np.ndarray | None] = []
     to_embed: list[str] = []
     reused = 0
@@ -256,7 +309,7 @@ def do_index(collection: str, paths: list[str], excludes: list[str] | None = Non
             to_embed.extend(c["text"] for c in chunks)
 
     if to_embed:
-        vecs = embed(to_embed)
+        vecs = embed(to_embed, model_name)
         pos = 0
         for i, r in enumerate(rows):
             if r is None:
@@ -265,7 +318,7 @@ def do_index(collection: str, paths: list[str], excludes: list[str] | None = Non
                 pos += n
     nonempty = [r for r in rows if r is not None and r.size]
     matrix = np.vstack(nonempty).astype(np.float32) if nonempty \
-        else np.zeros((0, 512), dtype=np.float32)
+        else np.zeros((0, expected_dim), dtype=np.float32)
 
     save_store(collection, new_meta, matrix)
     total = sum(len(v["chunks"]) for v in new_meta["files"].values())
@@ -324,6 +377,8 @@ def do_search(collection: str, query: str, k: int = 5,
     meta, mat = load_store(collection)
     if mat.shape[0] == 0:
         return {"ok": False, "error": f"库 {collection} 为空：先 index 再 search"}
+    # 用库元数据里的模型做查询（避免运行时切换默认后命中错位）
+    _ = get_model(meta.get("model", DEFAULT_MODEL))
 
     # 展平所有块（与矩阵行对齐）
     off = row_offsets(meta)
@@ -335,7 +390,7 @@ def do_search(collection: str, query: str, k: int = 5,
             texts.append(c["text"])
             owners.append((p, ci))
 
-    qv = embed([query])[0]
+    qv = embed([query], meta.get("model", DEFAULT_MODEL))[0]
     dense = mat @ qv / (np.linalg.norm(mat, axis=1) * (np.linalg.norm(qv) + 1e-8) + 1e-8)
     dense_rank = list(np.argsort(-dense))
 
@@ -363,14 +418,25 @@ def do_search(collection: str, query: str, k: int = 5,
 
 def do_stats(collection: str = "") -> dict:
     cols = sorted(f.stem for f in DATA_DIR.glob("*.json")) if DATA_DIR.exists() else []
-    out: dict = {"ok": True, "model": MODEL_NAME, "version": __version__, "collections": cols,
-                 "data_dir": str(DATA_DIR)}
+    cur = _read_config().get("name") or DEFAULT_MODEL
+    out: dict = {"ok": True, "model": cur, "version": __version__, "collections": cols,
+                 "data_dir": str(DATA_DIR), "available_models": sorted(MODEL_DIM.keys())}
     if collection:
         meta, mat = load_store(collection)
         out.update({"collection": collection, "files": len(meta["files"]),
                     "chunks": int(mat.shape[0]),
-                    "dim": int(mat.shape[1]) if mat.size else 0})
+                    "dim": int(mat.shape[1]) if mat.size else 0,
+                    "lib_model": meta.get("model", DEFAULT_MODEL)})
     return out
+
+
+def do_set_model(name: str) -> dict:
+    """切换默认嵌入模型（写到 ~/.pykb/config.toml）；新 collection 生效；已有库拒绝跨模型索引（保护）。"""
+    if name not in MODEL_DIM:
+        return {"ok": False, "error": f"未知模型：{name}", "available": sorted(MODEL_DIM.keys())}
+    _write_config(name)
+    return {"ok": True, "model": name, "dim": MODEL_DIM[name],
+            "note": "新 collection 生效；已存在的库需 delete 后再 index"}
 
 
 # ---------------- delete / show / compact / export / import ----------------
@@ -451,7 +517,7 @@ def do_export(collection: str, out_path: str) -> dict:
     tmp_dir.mkdir(parents=True, exist_ok=True)
     try:
         # 落 manifest
-        manifest = {"collection": collection, "model": MODEL_NAME,
+        manifest = {"collection": collection, "model": _read_config().get("name") or DEFAULT_MODEL,
                     "version": __version__, "files": list(files.keys()),
                     "files_count": len(meta["files"]), "chunks": len(meta.get("order", []))}
         (tmp_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
@@ -528,7 +594,7 @@ class Handler(BaseHTTPRequestHandler):
                 st = do_stats()
             except Exception:
                 st = {"collections": []}
-            self._send({"ok": True, "loaded": _model is not None, **st})
+            self._send({"ok": True, "loaded": bool(_models), **st})
         else:
             self._send({"ok": False, "error": "not found"}, 404)
 
@@ -538,7 +604,8 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(n) or b"{}")
             if self.path == "/index":
                 self._send(do_index(req.get("collection") or DEFAULT_COL, req.get("paths") or [],
-                                    req.get("excludes") or [], bool(req.get("force"))))
+                                    req.get("excludes") or [], bool(req.get("force")),
+                                    str(req.get("model") or "")))
             elif self.path == "/search":
                 self._send(do_search(req.get("collection") or DEFAULT_COL,
                                      str(req.get("query") or ""), int(req.get("k") or 5),
@@ -546,6 +613,8 @@ class Handler(BaseHTTPRequestHandler):
                                      bool(req.get("dense_only"))))
             elif self.path == "/stats":
                 self._send(do_stats(req.get("collection") or ""))
+            elif self.path == "/model":
+                self._send(do_set_model(str(req.get("name") or "")))
             else:
                 self._send({"ok": False, "error": "not found"}, 404)
         except Exception as exc:  # 服务不崩：错误以 JSON 返回给调用方
@@ -605,6 +674,7 @@ def main():
     p_idx.add_argument("--force", action="store_true", help="忽略缓存全量重嵌入")
     p_idx.add_argument("--exclude", action="append", default=[],
                        help="排除 glob（可多次，如 --exclude '*.en.md'）")
+    p_idx.add_argument("--model", default="", help="嵌入模型（默认读 ~/.pykb/config.toml [embedding] name）")
 
     p_q = sub.add_parser("search", help="混合检索（语义 + BM25）")
     p_q.add_argument("query")
@@ -612,6 +682,11 @@ def main():
     p_q.add_argument("-k", type=int, default=5)
     p_q.add_argument("--source-prefix", default="", help="只返回路径含该前缀的命中")
     p_q.add_argument("--dense-only", action="store_true", help="纯向量检索（不做 BM25 融合）")
+    p_q.add_argument("--model", default="", help="查询用模型（默认从库元数据推断）")
+
+    p_m = sub.add_parser("model", help="切换默认嵌入模型（写到 ~/.pykb/config.toml）")
+    p_m.add_argument("name", nargs="?", default="",
+                     help=f"模型名（留空=列出可用）。可选：{', '.join(sorted(MODEL_DIM.keys()))}")
 
     p_st = sub.add_parser("stats", help="库统计")
     p_st.add_argument("-c", "--collection", default="")
@@ -645,6 +720,20 @@ def main():
             print()
     elif args.cmd == "stats":
         print(json.dumps(do_stats(args.collection), ensure_ascii=False, indent=2))
+    elif args.cmd == "model":
+        if not args.name:
+            print(f"当前默认模型：{do_stats().get('model')}")
+            print("可用：")
+            for n in sorted(MODEL_DIM.keys()):
+                print(f"  {n}  ({MODEL_DIM[n]} 维)")
+            return
+        r = do_set_model(args.name)
+        if not r.get("ok"):
+            print(f"错误：{r.get('error')}")
+            return
+        print(f"已切换默认模型 → {r['model']}（{r['dim']} 维）")
+        if r.get("note"):
+            print(r["note"])
     elif args.cmd == "watch":
         watch(args.paths, args.collection, args.exclude, args.interval)
 

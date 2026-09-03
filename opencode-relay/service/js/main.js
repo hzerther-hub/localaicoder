@@ -9,6 +9,12 @@ const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.inn
 const ago=ts=>{const d=Date.now()/1000-ts;if(d<60)return '刚刚';if(d<3600)return Math.floor(d/60)+'分';if(d<86400)return Math.floor(d/3600)+'时';return Math.floor(d/86400)+'天';};
 function setConn(s){const el=$('conn');if(el)el.className=s;}
 
+/* ---------- 电脑端标识：让手机知道当前操作的是哪台电脑 ---------- */
+function applyHost(h){ if(!h)return; const el=$('host'); if(!el)return;
+ const name=String(h.hostname||''),os=String(h.os||'').trim();
+ el.textContent='💻 '+name+(os?' · '+os:'');
+ el.title=(h.user?h.user+'@':'')+name+(os?' · '+os:'');}
+
 /* ---------- 消息渲染（官方风格：who 标签 + 内容；AI 侧带轻量 Markdown） ---------- */
 function mdRender(src){
  let out='';const lines=String(src).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').split('\n');
@@ -134,13 +140,15 @@ function connect(){
   else if(m.type==='question_done'){if(permQ&&permQ.id===m.id){permQ=null;$('qBar').style.display='none';}}
   else if(m.type==='question_request'){showQ(m);}
   else if(m.type==='fs'){fsSet(!!m.enabled,!!m.safe);}              // 电脑端切换文件开关
+  else if(m.type==='hostinfo'){applyHost(m);}                       // 电脑端标识（无 rid 分支，双保险）
   else if(m.type==='hello'){
+    applyHost(m.host);                     // 电脑端标识：主机名/系统/用户
     fsSet(!!m.fs_enabled,!!m.fs_safe);     // PC (重)连时同步开关
     loadState();loadModels();              // 桥重连成功 → 刷新数据
   }
   // fs_read / fs_list 响应由 req()/pend 系统处理，不在 onmessage 分发（避免循环调用）
  };
- ws.onopen=()=>{setConn('live');loadState();loadModels();loadCommands();if(sid)openS(sid,false);};
+ ws.onopen=()=>{setConn('live');loadState();loadModels();loadCommands();req({type:'hostinfo'}).then(applyHost).catch(()=>{});if(sid)openS(sid,false);};
  ws.onclose=(e)=>{let why='';const c=e&&e.code;if(c&&c!==1000)why=' (code '+c+')';setConn('dead');add('err','连接断开'+why+'，3 秒后重连…');setTimeout(()=>{log.innerHTML='';cur=null;connect();},3000);};
 }
 function req(o){return new Promise((res,rej)=>{

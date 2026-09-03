@@ -66,6 +66,8 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
 #btnS:active{background:var(--bg-2);color:var(--text)}
 #sessName{flex:1;min-width:0;font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #sessName:empty::after{content:"opencode";color:var(--text-faint)}
+#host{flex:none;font-size:11px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38vw}
+#host:empty{display:none}
 #run{flex:none;font-family:var(--mono);color:var(--ok);font-size:12px;white-space:nowrap}
 #run:empty{display:none}
 #conn{flex:none;width:8px;height:8px;border-radius:50%;background:var(--border-2)}

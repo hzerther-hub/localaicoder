@@ -74,8 +74,11 @@ opencode 中继桥（方案 A）——完整说明
 import argparse
 import asyncio
 import base64
+import getpass
 import json
 import os
+import platform
+import socket
 import sys
 import threading
 import time
@@ -91,6 +94,15 @@ DEFAULT_CONFIG = os.path.join(HERE, "opencode_bridge.json")
 # ask 权限模式下手机端迟迟不审批的兜底：超过该秒数自动 reject，避免 opencode 侧
 # 永久挂起等授权。可用环境变量 OPENCODE_BRIDGE_PERM_TIMEOUT 覆盖（单位秒，默认 120）。
 PERM_TIMEOUT = int(os.environ.get("OPENCODE_BRIDGE_PERM_TIMEOUT", "120"))
+
+
+def host_info() -> dict:
+    """本机标识：让手机页知道当前操作的是哪台电脑（主机名/系统/用户）。
+    Darwin 统一显示为 macOS；release 取平台版本号（如 Windows 的 10/11、Linux 内核版本）。"""
+    sysname = platform.system() or "未知系统"
+    return {"hostname": socket.gethostname() or "?",
+            "os": ("macOS" if sysname == "Darwin" else sysname) + " " + (platform.release() or ""),
+            "user": getpass.getuser()}
 
 
 def log(msg):
@@ -566,6 +578,7 @@ class Bridge:
             await self._send({"type": "hello", "workspace": self.workspace,
                               "model": self.current_model, "mode": self.mode,
                               "fs_enabled": True, "fs_safe": True,
+                              "host": host_info(),
                               "version": "opencode-bridge/1.0"})
             # 断线补偿：哑管道不缓存帧，通知手机端重拉错过帧的会话（openS 会重拉全量消息）
             if self._missed:
@@ -593,6 +606,7 @@ class Bridge:
         send                发消息/附件（_handle_send，核心路径）
         stop                中止会话运行（POST /session/:id/abort）
         state               全量状态快照（工作区/分支/模式/模型/会话列表）
+        hostinfo            本机标识（主机名/系统/用户），手机页显示当前操作的是哪台电脑
         messages            拉某会话历史消息（进手机端聊天窗）
         models / model      模型清单下发 / 切换当前模型（仅记录在桥侧）
         effort              推理档位：opencode 无对应概念，v1 直接忽略
@@ -615,6 +629,9 @@ class Bridge:
                 await self._handle_stop(frame)
             elif t == "state":
                 await self._send(await self._state(rid))
+            elif t == "hostinfo":
+                # 手机页（重）连后主动拉一次本机标识；hello 帧也带 host，双保险覆盖接入时序
+                await self._send({"type": "hostinfo", "rid": rid, **host_info()})
             elif t == "messages":
                 await self._send(await self._messages(frame.get("id"), rid))
             elif t == "models":
